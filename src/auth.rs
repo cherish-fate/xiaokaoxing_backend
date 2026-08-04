@@ -1,111 +1,69 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, anyhow};
 use argon2::{
     Argon2,
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
+    password_hash::{
+        PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
+        rand_core::OsRng,
+    },
 };
-use axum::http::{HeaderMap, StatusCode, header::AUTHORIZATION};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 
-use crate::state::AppState;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// JWT Claims（负载）
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
-    pub sub: i64, // user_id
-    pub email: String,
-    pub exp: usize,
+    pub sub: String,   // 用户 ID（字符串形式）
+    pub email: String, // 用户邮箱
+    pub exp: usize,    // 过期时间（Unix 时间戳，秒）
 }
 
-#[derive(Debug, Clone)]
-pub struct AuthorizedUser {
-    pub user_id: i64,
-    pub email: String,
-    pub token: String,
-}
-
-pub fn hash_password(password: &str) -> Result<String> {
+/// 使用 Argon2 对明文密码进行哈希
+pub fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {
     let salt = SaltString::generate(&mut OsRng);
-    let hash = Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
-        .map_err(|e| anyhow!("密码加密失败: {e}"))?
-        .to_string();
-    Ok(hash)
+    let argon2 = Argon2::default();
+    let hash = argon2.hash_password(password.as_bytes(), &salt)?;
+    Ok(hash.to_string())
 }
 
-pub fn verify_password(password: &str, hash: &str) -> Result<bool> {
-    let parsed = PasswordHash::new(hash)
-        .map_err(|e| anyhow!("密码哈希解析失败: {e}"))?;
+/// 验证明文密码是否匹配哈希值
+pub fn verify_password(password: &str, hash: &str) -> Result<bool, argon2::password_hash::Error> {
+    let parsed_hash = PasswordHash::new(hash)?;
     Ok(Argon2::default()
-        .verify_password(password.as_bytes(), &parsed)
+        .verify_password(password.as_bytes(), &parsed_hash)
         .is_ok())
 }
 
+/// 生成 JWT Token
 pub fn create_token(
-    user_id: i64,
+    user_id: i32,
     email: &str,
     secret: &str,
-    expires_in_seconds: u64,
-) -> Result<String> {
-    let exp = SystemTime::now()
-        .checked_add(Duration::from_secs(expires_in_seconds))
-        .context("计算过期时间失败")?
+    expires_seconds: u64,
+) -> Result<String, jsonwebtoken::errors::Error> {
+    let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .context("计算时间戳失败")?
-        .as_secs() as usize;
-
+        .unwrap()
+        .as_secs();
     let claims = Claims {
-        sub: user_id,
+        sub: user_id.to_string(),
         email: email.to_string(),
-        exp,
+        exp: (now + expires_seconds) as usize,
     };
-
-    let token = encode(
+    encode(
         &Header::default(),
         &claims,
         &EncodingKey::from_secret(secret.as_bytes()),
     )
-    .context("JWT 编码失败")?;
-
-    Ok(token)
 }
 
-pub fn decode_token(token: &str, secret: &str) -> Result<Claims> {
-    let data = decode::<Claims>(
+/// 验证 JWT Token，返回 Claims
+#[allow(dead_code)]
+pub fn verify_token(token: &str, secret: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
+    let token_data = decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret.as_bytes()),
         &Validation::default(),
-    )
-    .context("JWT 解码失败")?;
-    Ok(data.claims)
-}
-
-pub async fn require_user(
-    headers: &HeaderMap,
-    state: &AppState,
-) -> std::result::Result<AuthorizedUser, (StatusCode, String)> {
-    let header_value = headers
-        .get(AUTHORIZATION)
-        .ok_or((StatusCode::UNAUTHORIZED, "未登录或 Token 缺失".to_string()))?;
-    let auth_value = header_value
-        .to_str()
-        .map_err(|_| (StatusCode::UNAUTHORIZED, "未登录或 Token 缺失".to_string()))?;
-    let token = auth_value
-        .strip_prefix("Bearer ")
-        .ok_or((StatusCode::UNAUTHORIZED, "未登录或 Token 缺失".to_string()))?
-        .trim();
-
-    let claims = decode_token(token, &state.config.jwt_secret).map_err(|_| {
-        (
-            StatusCode::FORBIDDEN,
-            "Token 已过期，请重新登录".to_string(),
-        )
-    })?;
-
-    Ok(AuthorizedUser {
-        user_id: claims.sub,
-        email: claims.email,
-        token: token.to_string(),
-    })
+    )?;
+    Ok(token_data.claims)
 }
