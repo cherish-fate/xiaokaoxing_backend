@@ -1,11 +1,15 @@
 use axum::{
     Router,
-    routing::{get, post},
+    routing::{get, post, put, delete},
 };
 
 pub mod auth;
+pub mod exams;
 pub mod health;
+pub mod home;
 pub mod majors;
+pub mod resources;
+pub mod tasks;
 pub mod users;
 
 pub fn router() -> Router<crate::state::AppState> {
@@ -19,4 +23,16 @@ pub fn router() -> Router<crate::state::AppState> {
         .route("/api/users/register", post(users::register))
         // 用户登录
         .route("/api/users/login", post(auth::login))
+        // 首页聚合接口
+        .route("/api/home", get(home::get_home))
+        // 考试 CRUD
+        .route("/api/exams", get(exams::list_exams))
+        .route("/api/exams", post(exams::create_exam))
+        .route("/api/exams/{id}", put(exams::update_exam))
+        .route("/api/exams/{id}", delete(exams::delete_exam))
+        // 任务接口
+        .route("/api/tasks/today", get(tasks::get_today_tasks))
+        .route("/api/tasks/{id}", put(tasks::update_task))
+        // 推荐资源
+        .route("/api/resources/recommended", get(resources::get_recommended_resources))
 }

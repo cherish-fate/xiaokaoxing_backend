@@ -1,5 +1,6 @@
 mod app;
 mod auth;
+mod auth_ext;
 mod config;
 mod db;
 mod response;

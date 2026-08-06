@@ -185,3 +185,77 @@ INSERT INTO `users` (
           5,  -- 通信工程
           NULL
       );
+
+-- 6. 考试信息表
+CREATE TABLE `exams` (
+    `id` int NOT NULL AUTO_INCREMENT COMMENT '考试ID，主键',
+    `user_id` int NOT NULL COMMENT '所属用户ID，逻辑关联users表',
+    `name` varchar(100) NOT NULL COMMENT '考试名称（如：高等数学）',
+    `exam_date` date NOT NULL COMMENT '考试日期',
+    `start_time` time NOT NULL COMMENT '考试开始时间（如：09:00）',
+    `end_time` time DEFAULT NULL COMMENT '考试结束时间（如：10:00），可选',
+    `location` varchar(200) DEFAULT NULL COMMENT '考试地点（如：综合楼201）',
+    `is_completed` tinyint(1) DEFAULT '0' COMMENT '是否已完成（0-待完成，1-已完成），用于统计今日进度',
+    `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
+    PRIMARY KEY (`id`),
+    KEY `idx_user_id` (`user_id`) COMMENT '用户ID索引，便于查询该用户所有考试',
+    KEY `idx_exam_date` (`exam_date`) COMMENT '考试日期索引，便于排序和倒计时计算'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='考试信息表';
+
+-- 7. 学习任务/计划表
+CREATE TABLE `tasks` (
+    `id` int NOT NULL AUTO_INCREMENT COMMENT '任务ID，主键',
+    `user_id` int NOT NULL COMMENT '所属用户ID，逻辑关联users表',
+    `task_name` varchar(200) NOT NULL COMMENT '任务名称（如：复习高等数学第三章）',
+    `plan_date` date NOT NULL COMMENT '计划执行日期（用于筛选今日任务）',
+    `is_completed` tinyint(1) DEFAULT '0' COMMENT '是否已完成（0-待完成，1-已完成）',
+    `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
+    PRIMARY KEY (`id`),
+    KEY `idx_user_id` (`user_id`) COMMENT '用户ID索引',
+    KEY `idx_plan_date` (`plan_date`) COMMENT '计划日期索引，用于快速查询今日任务'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='学习任务/计划表';
+
+-- 8. 备考资源表
+CREATE TABLE `resources` (
+    `id` int NOT NULL AUTO_INCREMENT COMMENT '资源ID，主键',
+    `title` varchar(200) NOT NULL COMMENT '资源标题（如：高数期末真题汇总（2020-2024））',
+    `type_tag` varchar(50) NOT NULL COMMENT '资源类型标签（如：本校专属、高频必考）',
+    `school_name` varchar(100) DEFAULT NULL COMMENT '所属学校（NULL表示通用资源，全校可用）',
+    `major_id` int DEFAULT NULL COMMENT '关联专业ID（NULL表示通用资源，所有专业可用），逻辑关联majors表',
+    `description` text COMMENT '资源描述/简介（如：包含近5年高数期末真题及解析）',
+    `file_url` varchar(500) NOT NULL COMMENT '资源文件URL或外部链接',
+    `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
+    PRIMARY KEY (`id`),
+    KEY `idx_school_name` (`school_name`) COMMENT '学校索引，用于筛选本校资源',
+    KEY `idx_major_id` (`major_id`) COMMENT '专业索引，用于筛选相关专业资源',
+    KEY `idx_type_tag` (`type_tag`) COMMENT '类型标签索引'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='备考资源表';
+
+-- 示例数据：考试
+INSERT INTO `exams` (`user_id`, `name`, `exam_date`, `start_time`, `end_time`, `location`, `is_completed`) VALUES
+    (1, '高等数学', '2026-08-21', '09:00:00', '10:00:00', '综合楼201', 0),
+    (1, '大学英语', '2026-08-25', '14:00:00', '16:00:00', '综合楼301', 0),
+    (1, '线性代数', '2026-09-10', '09:00:00', '11:00:00', '教学楼A102', 0),
+    (1, '计算机组成原理', '2026-07-15', '09:00:00', '10:30:00', '实验楼B201', 1),
+    (2, '软件工程', '2026-08-30', '14:00:00', '16:00:00', '教学楼C305', 0),
+    (2, '数据库原理', '2026-09-05', '09:00:00', '11:00:00', '实验楼B101', 0);
+
+-- 示例数据：任务（今日任务基于当前日期动态生成，这里只做示例）
+INSERT INTO `tasks` (`user_id`, `task_name`, `plan_date`, `is_completed`) VALUES
+    (1, '复习高等数学第三章', '2026-08-06', 1),
+    (1, '完成英语四级真题一套', '2026-08-06', 0),
+    (1, '整理计算机组成原理笔记', '2026-08-06', 0),
+    (1, '做10道线性代数习题', '2026-08-07', 0),
+    (2, '复习软件工程需求分析', '2026-08-06', 0);
+
+-- 示例数据：资源
+INSERT INTO `resources` (`title`, `type_tag`, `school_name`, `major_id`, `description`, `file_url`) VALUES
+    ('高数期末真题汇总（2020-2024）', '本校专属', '南阳理工学院', 1, '包含近5年高数期末真题及解析', 'https://example.com/resource/1'),
+    ('数据结构期末复习资料', '本校专属', '南阳理工学院', 1, '数据结构重点知识点梳理', 'https://example.com/resource/3'),
+    ('英语四六级重点词汇', '高频必考', NULL, 2, '四六级高频词汇汇总', 'https://example.com/resource/2'),
+    ('考研数学基础知识点', '高频必考', NULL, NULL, '考研数学核心考点汇总', 'https://example.com/resource/4'),
+    ('软件工程导论笔记', '本校专属', '郑州大学', 2, '软件工程重点概念整理', 'https://example.com/resource/5'),
+    ('计算机网络期末真题', '本校专属', '南阳理工学院', 1, '近3年计算机网络期末真题', 'https://example.com/resource/6');
