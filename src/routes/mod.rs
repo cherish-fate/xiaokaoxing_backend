@@ -32,7 +32,9 @@ pub fn router() -> Router<crate::state::AppState> {
         .route("/api/exams/{id}", delete(exams::delete_exam))
         // 任务接口
         .route("/api/tasks/today", get(tasks::get_today_tasks))
+        .route("/api/tasks", post(tasks::create_task))
         .route("/api/tasks/{id}", put(tasks::update_task))
+        .route("/api/tasks/{id}", delete(tasks::delete_task))
         // 推荐资源
         .route("/api/resources/recommended", get(resources::get_recommended_resources))
 }

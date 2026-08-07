@@ -395,6 +395,73 @@ pub async fn update_task_status(pool: &MySqlPool, id: i32, is_completed: bool) -
     Ok(task)
 }
 
+pub async fn create_task(
+    pool: &MySqlPool,
+    user_id: i32,
+    task_name: &str,
+    plan_date: chrono::NaiveDate,
+    is_completed: bool,
+) -> Result<Task> {
+    let result = sqlx::query(
+        "INSERT INTO tasks (user_id, task_name, plan_date, is_completed) VALUES (?, ?, ?, ?)",
+    )
+    .bind(user_id)
+    .bind(task_name)
+    .bind(plan_date)
+    .bind(is_completed)
+    .execute(pool)
+    .await
+    .context("插入任务失败")?;
+
+    let task_id = result.last_insert_id() as i32;
+
+    let task = find_task_by_id(pool, task_id)
+        .await?
+        .context("查询新创建任务失败")?;
+    Ok(task)
+}
+
+pub async fn update_task_fields(
+    pool: &MySqlPool,
+    id: i32,
+    task_name: Option<&str>,
+    plan_date: Option<chrono::NaiveDate>,
+    is_completed: Option<bool>,
+) -> Result<Task> {
+    let task = find_task_by_id(pool, id)
+        .await?
+        .context("任务不存在")?;
+
+    let final_name = task_name.unwrap_or(&task.task_name);
+    let final_date = plan_date.unwrap_or(task.plan_date);
+    let final_completed = is_completed.unwrap_or(task.is_completed);
+
+    sqlx::query(
+        "UPDATE tasks SET task_name = ?, plan_date = ?, is_completed = ? WHERE id = ?",
+    )
+    .bind(final_name)
+    .bind(final_date)
+    .bind(final_completed)
+    .bind(id)
+    .execute(pool)
+    .await
+    .context("更新任务失败")?;
+
+    let task = find_task_by_id(pool, id)
+        .await?
+        .context("查询更新后任务失败")?;
+    Ok(task)
+}
+
+pub async fn delete_task(pool: &MySqlPool, id: i32) -> Result<()> {
+    sqlx::query("DELETE FROM tasks WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await
+        .context("删除任务失败")?;
+    Ok(())
+}
+
 // ============ 资源模型 ============
 
 #[derive(sqlx::FromRow)]
