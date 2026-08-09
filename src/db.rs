@@ -468,13 +468,32 @@ pub async fn delete_task(pool: &MySqlPool, id: i32) -> Result<()> {
 pub struct Resource {
     pub id: i32,
     pub title: String,
+    pub category: String,
     pub type_tag: String,
     pub school_name: Option<String>,
     pub major_id: Option<i32>,
+    pub author: Option<String>,
     pub description: Option<String>,
     pub file_url: String,
+    pub view_count: i64,
+    pub is_hot: bool,
     pub created_at: chrono::NaiveDateTime,
     pub updated_at: chrono::NaiveDateTime,
+}
+
+/// 资源列表项（带当前用户收藏状态）
+#[derive(sqlx::FromRow)]
+pub struct ResourceWithFavorite {
+    pub id: i32,
+    pub title: String,
+    pub category: String,
+    pub type_tag: String,
+    pub author: Option<String>,
+    pub file_url: String,
+    pub view_count: i64,
+    pub is_hot: bool,
+    pub created_at: chrono::NaiveDateTime,
+    pub is_favorited: i64,
 }
 
 // ============ 资源查询 ============
@@ -486,7 +505,7 @@ pub async fn find_recommended_resources(
     limit: i64,
 ) -> Result<Vec<Resource>> {
     let resources = sqlx::query_as::<_, Resource>(
-        "SELECT id, title, type_tag, school_name, major_id, description, file_url, created_at, updated_at FROM resources WHERE (school_name = ? AND major_id = ?) OR (school_name = ? AND major_id IS NULL) OR (school_name IS NULL AND major_id = ?) ORDER BY CASE WHEN school_name = ? AND major_id = ? THEN 0 WHEN school_name = ? AND major_id IS NULL THEN 1 WHEN school_name IS NULL AND major_id = ? THEN 2 ELSE 3 END, created_at DESC LIMIT ?",
+        "SELECT id, title, category, type_tag, school_name, major_id, author, description, file_url, view_count, is_hot, created_at, updated_at FROM resources WHERE (school_name = ? AND major_id = ?) OR (school_name = ? AND major_id IS NULL) OR (school_name IS NULL AND major_id = ?) ORDER BY CASE WHEN school_name = ? AND major_id = ? THEN 0 WHEN school_name = ? AND major_id IS NULL THEN 1 WHEN school_name IS NULL AND major_id = ? THEN 2 ELSE 3 END, created_at DESC LIMIT ?",
     )
     .bind(school_name)
     .bind(major_id)
@@ -501,4 +520,213 @@ pub async fn find_recommended_resources(
     .await
     .context("查询推荐资源失败")?;
     Ok(resources)
+}
+
+/// 资源是否存在
+pub async fn resource_exists(pool: &MySqlPool, id: i32) -> Result<bool> {
+    let row = sqlx::query("SELECT 1 FROM resources WHERE id = ? LIMIT 1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .context("查询资源是否存在失败")?;
+    Ok(row.is_some())
+}
+
+/// 按分类查询资源列表（带收藏状态），category 为 None 返回全部
+pub async fn find_resources_list(
+    pool: &MySqlPool,
+    user_id: i32,
+    school_name: &str,
+    major_id: i32,
+    category: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<ResourceWithFavorite>> {
+    let resources = sqlx::query_as::<_, ResourceWithFavorite>(
+        "SELECT r.id, r.title, r.category, r.type_tag, r.author, r.file_url, r.view_count, r.is_hot, r.created_at, \
+        CASE WHEN f.id IS NOT NULL THEN 1 ELSE 0 END AS is_favorited \
+        FROM resources r \
+        LEFT JOIN favorites f ON f.resource_id = r.id AND f.user_id = ? \
+        WHERE (r.school_name = ? OR r.school_name IS NULL) \
+        AND (r.major_id = ? OR r.major_id IS NULL) \
+        AND (? IS NULL OR r.category = ?) \
+        ORDER BY r.is_hot DESC, r.created_at DESC \
+        LIMIT ? OFFSET ?",
+    )
+    .bind(user_id)
+    .bind(school_name)
+    .bind(major_id)
+    .bind(category)
+    .bind(category)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await
+    .context("查询资源列表失败")?;
+    Ok(resources)
+}
+
+/// 统计符合条件的资源总数，category 为 None 统计全部
+pub async fn count_resources_list(
+    pool: &MySqlPool,
+    school_name: &str,
+    major_id: i32,
+    category: Option<&str>,
+) -> Result<i64> {
+    let row = sqlx::query(
+        "SELECT COUNT(*) AS cnt FROM resources r \
+        WHERE (r.school_name = ? OR r.school_name IS NULL) \
+        AND (r.major_id = ? OR r.major_id IS NULL) \
+        AND (? IS NULL OR r.category = ?)",
+    )
+    .bind(school_name)
+    .bind(major_id)
+    .bind(category)
+    .bind(category)
+    .fetch_one(pool)
+    .await
+    .context("统计资源总数失败")?;
+    let total: Option<i64> = row.try_get("cnt").unwrap_or(None);
+    Ok(total.unwrap_or(0))
+}
+
+/// 关键词搜索资源（匹配 title 和 description），仅返回与用户学校相关的资源
+pub async fn search_resources(
+    pool: &MySqlPool,
+    user_id: i32,
+    school_name: &str,
+    major_id: i32,
+    keyword: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<ResourceWithFavorite>> {
+    let pattern = format!("%{}%", keyword);
+    let resources = sqlx::query_as::<_, ResourceWithFavorite>(
+        "SELECT r.id, r.title, r.category, r.type_tag, r.author, r.file_url, r.view_count, r.is_hot, r.created_at, \
+        CASE WHEN f.id IS NOT NULL THEN 1 ELSE 0 END AS is_favorited \
+        FROM resources r \
+        LEFT JOIN favorites f ON f.resource_id = r.id AND f.user_id = ? \
+        WHERE (r.school_name = ? OR r.school_name IS NULL) \
+        AND (r.major_id = ? OR r.major_id IS NULL) \
+        AND (r.title LIKE ? OR r.description LIKE ?) \
+        ORDER BY r.is_hot DESC, r.created_at DESC \
+        LIMIT ? OFFSET ?",
+    )
+    .bind(user_id)
+    .bind(school_name)
+    .bind(major_id)
+    .bind(&pattern)
+    .bind(&pattern)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await
+    .context("搜索资源失败")?;
+    Ok(resources)
+}
+
+/// 统计搜索结果总数
+pub async fn count_search_resources(
+    pool: &MySqlPool,
+    school_name: &str,
+    major_id: i32,
+    keyword: &str,
+) -> Result<i64> {
+    let pattern = format!("%{}%", keyword);
+    let row = sqlx::query(
+        "SELECT COUNT(*) AS cnt FROM resources r \
+        WHERE (r.school_name = ? OR r.school_name IS NULL) \
+        AND (r.major_id = ? OR r.major_id IS NULL) \
+        AND (r.title LIKE ? OR r.description LIKE ?)",
+    )
+    .bind(school_name)
+    .bind(major_id)
+    .bind(&pattern)
+    .bind(&pattern)
+    .fetch_one(pool)
+    .await
+    .context("统计搜索结果失败")?;
+    let total: Option<i64> = row.try_get("cnt").unwrap_or(None);
+    Ok(total.unwrap_or(0))
+}
+
+/// 查询热门资源（取一条用于推荐）
+pub async fn find_hot_resource(
+    pool: &MySqlPool,
+    school_name: &str,
+    major_id: i32,
+) -> Result<Option<Resource>> {
+    let resource = sqlx::query_as::<_, Resource>(
+        "SELECT id, title, category, type_tag, school_name, major_id, author, description, file_url, view_count, is_hot, created_at, updated_at FROM resources \
+        WHERE is_hot = 1 AND (school_name = ? OR school_name IS NULL) AND (major_id = ? OR major_id IS NULL) \
+        ORDER BY view_count DESC LIMIT 1",
+    )
+    .bind(school_name)
+    .bind(major_id)
+    .fetch_optional(pool)
+    .await
+    .context("查询热门资源失败")?;
+    Ok(resource)
+}
+
+// ============ 收藏查询 ============
+
+/// 查询用户是否已收藏某资源
+pub async fn find_favorite(pool: &MySqlPool, user_id: i32, resource_id: i32) -> Result<bool> {
+    let row = sqlx::query(
+        "SELECT 1 FROM favorites WHERE user_id = ? AND resource_id = ? LIMIT 1",
+    )
+    .bind(user_id)
+    .bind(resource_id)
+    .fetch_optional(pool)
+    .await
+    .context("查询收藏记录失败")?;
+    Ok(row.is_some())
+}
+
+/// 添加收藏
+pub async fn create_favorite(pool: &MySqlPool, user_id: i32, resource_id: i32) -> Result<()> {
+    sqlx::query("INSERT IGNORE INTO favorites (user_id, resource_id) VALUES (?, ?)")
+        .bind(user_id)
+        .bind(resource_id)
+        .execute(pool)
+        .await
+        .context("添加收藏失败")?;
+    Ok(())
+}
+
+/// 取消收藏
+pub async fn delete_favorite(pool: &MySqlPool, user_id: i32, resource_id: i32) -> Result<()> {
+    sqlx::query("DELETE FROM favorites WHERE user_id = ? AND resource_id = ?")
+        .bind(user_id)
+        .bind(resource_id)
+        .execute(pool)
+        .await
+        .context("取消收藏失败")?;
+    Ok(())
+}
+
+// ============ AI 对话记录 ============
+
+/// 存储一条 AI 对话消息
+pub async fn create_ai_message(
+    pool: &MySqlPool,
+    user_id: i32,
+    conversation_id: &str,
+    role: &str,
+    content: &str,
+    attachment_url: Option<&str>,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO ai_conversations (user_id, conversation_id, role, content, attachment_url) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(user_id)
+    .bind(conversation_id)
+    .bind(role)
+    .bind(content)
+    .bind(attachment_url)
+    .execute(pool)
+    .await
+    .context("存储 AI 对话记录失败")?;
+    Ok(())
 }

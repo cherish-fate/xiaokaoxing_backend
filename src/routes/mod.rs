@@ -1,13 +1,16 @@
 use axum::{
     Router,
+    extract::DefaultBodyLimit,
     routing::{get, post, put, delete},
 };
 
+pub mod ai;
 pub mod auth;
 pub mod exams;
 pub mod health;
 pub mod home;
 pub mod majors;
+pub mod prep;
 pub mod resources;
 pub mod tasks;
 pub mod users;
@@ -37,4 +40,17 @@ pub fn router() -> Router<crate::state::AppState> {
         .route("/api/tasks/{id}", delete(tasks::delete_task))
         // 推荐资源
         .route("/api/resources/recommended", get(resources::get_recommended_resources))
+        // 备考中心
+        .route("/api/prep/home", get(prep::get_prep_home))
+        // 资源列表（分类筛选）与搜索
+        .route("/api/resources", get(resources::list_resources))
+        .route("/api/resources/search", get(resources::search_resources))
+        // 收藏 / 取消收藏
+        .route("/api/resources/{id}/favorite", post(resources::toggle_favorite))
+        // AI 对话（流式）与文件上传
+        .route("/api/ai/chat", post(ai::chat))
+        .route(
+            "/api/ai/upload",
+            post(ai::upload).layer(DefaultBodyLimit::max(11 * 1024 * 1024)),
+        )
 }

@@ -259,3 +259,153 @@ INSERT INTO `resources` (`title`, `type_tag`, `school_name`, `major_id`, `descri
     ('考研数学基础知识点', '高频必考', NULL, NULL, '考研数学核心考点汇总', 'https://example.com/resource/4'),
     ('软件工程导论笔记', '本校专属', '郑州大学', 2, '软件工程重点概念整理', 'https://example.com/resource/5'),
     ('计算机网络期末真题', '本校专属', '南阳理工学院', 1, '近3年计算机网络期末真题', 'https://example.com/resource/6');
+
+-- 添加分类字段
+ALTER TABLE `resources` ADD COLUMN `category` varchar(50) NOT NULL DEFAULT '真题试卷' COMMENT '资源分类（真题试卷、复习提纲、课件考点、自测题库）' AFTER `title`;
+
+-- 添加作者字段
+ALTER TABLE `resources` ADD COLUMN `author` varchar(50) DEFAULT NULL COMMENT '来源作者（如：本校学长、本校老师）' AFTER `major_id`;
+
+-- 添加浏览量字段
+ALTER TABLE `resources` ADD COLUMN `view_count` int DEFAULT '0' COMMENT '浏览量' AFTER `file_url`;
+
+-- 添加热门标识字段
+ALTER TABLE `resources` ADD COLUMN `is_hot` tinyint(1) DEFAULT '0' COMMENT '是否热门（0-否，1-是）' AFTER `view_count`;
+
+-- 添加索引
+ALTER TABLE `resources` ADD INDEX `idx_category` (`category`);
+ALTER TABLE `resources` ADD INDEX `idx_view_count` (`view_count`);
+
+-- ============================================
+-- 1. 收藏表（favorites）
+-- ============================================
+CREATE TABLE `favorites` (
+                             `id` int NOT NULL AUTO_INCREMENT COMMENT '收藏记录ID，主键',
+                             `user_id` int NOT NULL COMMENT '用户ID，逻辑关联users表',
+                             `resource_id` int NOT NULL COMMENT '资源ID，逻辑关联resources表',
+                             `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '收藏时间',
+                             PRIMARY KEY (`id`),
+                             UNIQUE KEY `uk_user_resource` (`user_id`, `resource_id`) COMMENT '唯一约束，防止同一用户重复收藏同一资源',
+                             KEY `idx_user_id` (`user_id`) COMMENT '用户ID索引，查询用户所有收藏',
+                             KEY `idx_resource_id` (`resource_id`) COMMENT '资源ID索引，查询资源被收藏次数'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户收藏表';
+
+-- ============================================
+-- 2. AI对话记录表（ai_conversations）
+-- ============================================
+CREATE TABLE `ai_conversations` (
+                                    `id` int NOT NULL AUTO_INCREMENT COMMENT '消息记录ID，主键',
+                                    `user_id` int NOT NULL COMMENT '用户ID，逻辑关联users表',
+                                    `conversation_id` varchar(50) NOT NULL COMMENT '会话ID，同一会话共享相同ID，用于多轮对话分组',
+                                    `role` varchar(20) NOT NULL COMMENT '角色：user-用户消息，assistant-AI回复',
+                                    `content` text NOT NULL COMMENT '消息内容',
+                                    `attachment_url` varchar(500) DEFAULT NULL COMMENT '附件URL（用户上传的文件，可选）',
+                                    `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                                    PRIMARY KEY (`id`),
+                                    KEY `idx_user_id` (`user_id`) COMMENT '用户ID索引，查询用户所有对话记录',
+                                    KEY `idx_conversation_id` (`conversation_id`) COMMENT '会话ID索引，查询某次会话的所有消息',
+                                    KEY `idx_user_conversation` (`user_id`, `conversation_id`) COMMENT '联合索引，查询用户某次会话历史',
+                                    KEY `idx_created_at` (`created_at`) COMMENT '创建时间索引，按时间排序'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI对话记录表';
+
+-- 插入资源测试数据
+INSERT INTO `resources` (
+    `title`,
+    `category`,
+    `type_tag`,
+    `school_name`,
+    `major_id`,
+    `author`,
+    `description`,
+    `file_url`,
+    `view_count`,
+    `is_hot`
+) VALUES
+      (
+          '2024高数期末真题A卷',
+          '真题试卷',
+          '本校专属',
+          '南阳理工学院',
+          1,  -- 计算机科学与技术
+          '本校学长',
+          '2024年高等数学期末考试真题A卷，含参考答案和评分标准，适用于期末冲刺复习。',
+          'https://example.com/resources/2024_gaoshu_zhenti_A.pdf',
+          1203,
+          1
+      ),
+      (
+          '高数第1-5章复习提纲',
+          '复习提纲',
+          '本校专属',
+          '南阳理工学院',
+          1,  -- 计算机科学与技术
+          '本校老师',
+          '高等数学第1-5章重点知识点梳理，包含极限、导数、积分等核心考点，附带典型例题。',
+          'https://example.com/resources/gaoshu_fuxi_outline.pdf',
+          876,
+          0
+      ),
+      (
+          '极限·导数·积分考点汇编',
+          '课件考点',
+          '本校专属',
+          '南阳理工学院',
+          1,  -- 计算机科学与技术
+          '本校学长',
+          '高数核心考点汇编，包含极限的七种求法、导数应用、积分计算方法等，适合考前快速回顾。',
+          'https://example.com/resources/gaoshu_kaodian_huibian.pdf',
+          654,
+          0
+      ),
+      (
+          '英语四六级重点词汇',
+          '自测题库',
+          '高频必考',
+          NULL,  -- 通用资源
+          2,  -- 软件工程
+          '系统整理',
+          '大学英语四六级高频词汇汇总，包含核心词汇、常考短语、搭配用法，附带自测练习。',
+          'https://example.com/resources/cet4_6_vocabulary.pdf',
+          2301,
+          1
+      ),
+      (
+          '软件工程导论期末复习笔记',
+          '复习提纲',
+          '本校专属',
+          '郑州大学',
+          2,  -- 软件工程
+          '本校学长',
+          '软件工程导论重点概念整理，包含软件开发模型、需求分析、软件测试等核心知识点。',
+          'https://example.com/resources/software_engineering_notes.pdf',
+          543,
+          0
+      );
+
+-- 插入收藏测试数据
+INSERT INTO `favorites` (
+    `user_id`,
+    `resource_id`
+) VALUES
+-- 用户1（张三）的收藏
+(
+    1,  -- user_id: 张三
+    1   -- resource_id: 2024高数期末真题A卷
+),
+(
+    1,  -- user_id: 张三
+    4   -- resource_id: 英语四六级重点词汇
+),
+(
+    1,  -- user_id: 张三
+    5   -- resource_id: 软件工程导论期末复习笔记
+),
+-- 用户2（李四）的收藏
+(
+    2,  -- user_id: 李四
+    1   -- resource_id: 2024高数期末真题A卷
+),
+(
+    2,  -- user_id: 李四
+    2   -- resource_id: 高数第1-5章复习提纲
+);

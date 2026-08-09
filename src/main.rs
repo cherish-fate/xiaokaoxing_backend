@@ -22,6 +22,11 @@ async fn main() -> Result<()> {
 
     let config = AppConfig::from_env()?;
 
+    // 确保上传目录存在
+    if let Err(e) = std::fs::create_dir_all(&config.upload_dir) {
+        tracing::warn!("创建上传目录 {} 失败: {}", config.upload_dir, e);
+    }
+
     let db_connection = db::connect(config.database_url.as_deref()).await?;
     let addr = config.addr()?;
     let state = AppState {
