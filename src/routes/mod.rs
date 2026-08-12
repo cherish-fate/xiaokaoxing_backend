@@ -6,6 +6,8 @@ use axum::{
 
 pub mod ai;
 pub mod auth;
+pub mod checkin;
+pub mod community;
 pub mod exams;
 pub mod health;
 pub mod home;
@@ -13,7 +15,9 @@ pub mod majors;
 pub mod prep;
 pub mod resources;
 pub mod tasks;
+pub mod teams;
 pub mod users;
+pub mod votes;
 
 pub fn router() -> Router<crate::state::AppState> {
     Router::new()
@@ -43,8 +47,9 @@ pub fn router() -> Router<crate::state::AppState> {
         // 备考中心
         .route("/api/prep/home", get(prep::get_prep_home))
         // 资源列表（分类筛选）与搜索
-        .route("/api/resources", get(resources::list_resources))
+        .route("/api/resources", get(resources::list_resources).post(resources::upload_resource).layer(DefaultBodyLimit::max(50 * 1024 * 1024)))
         .route("/api/resources/search", get(resources::search_resources))
+        .route("/api/resources/my-uploads", get(resources::get_my_uploads))
         // 收藏 / 取消收藏
         .route("/api/resources/{id}/favorite", post(resources::toggle_favorite))
         // AI 对话（流式）与文件上传
@@ -53,4 +58,24 @@ pub fn router() -> Router<crate::state::AppState> {
             "/api/ai/upload",
             post(ai::upload).layer(DefaultBodyLimit::max(11 * 1024 * 1024)),
         )
+        // ============ 社区模块 ============
+        // 社区主页聚合
+        .route("/api/community/home", get(community::get_home))
+        // 打卡模块
+        .route("/api/checkin/today", get(checkin::get_today))
+        .route("/api/checkin", post(checkin::create_checkin))
+        .route("/api/checkin/calendar", get(checkin::get_calendar))
+        .route("/api/checkin/ranking", get(checkin::get_ranking))
+        // 备考小队模块
+        .route("/api/teams", get(teams::list_teams).post(teams::create_team))
+        .route("/api/teams/{id}", get(teams::get_team_detail).delete(teams::dissolve_team))
+        .route("/api/teams/{id}/join", post(teams::join_team))
+        .route("/api/teams/{id}/applications", get(teams::list_applications))
+        .route("/api/teams/{id}/applications/{application_id}", put(teams::process_application))
+        .route("/api/teams/{id}/members", delete(teams::leave_team))
+        // 考点投票模块
+        .route("/api/votes", get(votes::list_votes).post(votes::create_vote))
+        .route("/api/votes/my-votes", get(votes::get_my_votes))
+        .route("/api/votes/my-submissions", get(votes::get_my_submissions))
+        .route("/api/votes/{id}/vote", post(votes::cast_vote))
 }

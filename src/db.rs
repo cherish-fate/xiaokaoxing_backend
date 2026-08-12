@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+use chrono::{NaiveDate, NaiveTime};
 use sqlx::{Row, mysql::{MySqlPool, MySqlPoolOptions}};
 
 /// 数据库连接封装
@@ -728,5 +728,890 @@ pub async fn create_ai_message(
     .execute(pool)
     .await
     .context("存储 AI 对话记录失败")?;
+    Ok(())
+}
+
+// ============ 通用工具 ============
+
+/// 判断 sqlx 错误是否为唯一约束冲突（MySQL Duplicate entry）
+pub fn is_duplicate_key(err: &sqlx::Error) -> bool {
+    match err {
+        sqlx::Error::Database(db) => db.message().contains("Duplicate entry"),
+        _ => false,
+    }
+}
+
+/// 判断 anyhow 包装的错误是否为唯一约束冲突（MySQL Duplicate entry）
+pub fn is_duplicate_key_anyhow(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<sqlx::Error>()
+            .map(is_duplicate_key)
+            .unwrap_or(false)
+    })
+}
+
+// ============ 打卡模型 ============
+
+#[derive(sqlx::FromRow)]
+pub struct CheckinRecord {
+    pub id: i32,
+    pub user_id: i32,
+    pub checkin_date: chrono::NaiveDate,
+    pub subjects: Option<String>,
+    pub duration: Option<String>,
+    pub note: Option<String>,
+    pub tags: Option<String>,
+    pub continuous_days: i32,
+    pub created_at: chrono::NaiveDateTime,
+    pub updated_at: chrono::NaiveDateTime,
+}
+
+/// 同校打卡统计行（用于排行与个人排名计算）
+#[derive(sqlx::FromRow)]
+pub struct CheckinStatRow {
+    pub user_id: i32,
+    pub nickname: String,
+    pub avatar_url: Option<String>,
+    pub continuous_days: i32,
+    pub total_days: i64,
+}
+
+// ============ 打卡查询 ============
+
+/// 查询用户某天的打卡记录
+pub async fn find_checkin_by_user_date(
+    pool: &MySqlPool,
+    user_id: i32,
+    date: chrono::NaiveDate,
+) -> Result<Option<CheckinRecord>> {
+    let rec = sqlx::query_as::<_, CheckinRecord>(
+        "SELECT id, user_id, checkin_date, CAST(subjects AS CHAR) AS subjects, duration, note, CAST(tags AS CHAR) AS tags, continuous_days, created_at, updated_at FROM checkin_records WHERE user_id = ? AND checkin_date = ?",
+    )
+    .bind(user_id)
+    .bind(date)
+    .fetch_optional(pool)
+    .await
+    .context("查询打卡记录失败")?;
+    Ok(rec)
+}
+
+/// 查询用户最近一次打卡记录
+pub async fn find_latest_checkin_by_user(
+    pool: &MySqlPool,
+    user_id: i32,
+) -> Result<Option<CheckinRecord>> {
+    let rec = sqlx::query_as::<_, CheckinRecord>(
+        "SELECT id, user_id, checkin_date, CAST(subjects AS CHAR) AS subjects, duration, note, CAST(tags AS CHAR) AS tags, continuous_days, created_at, updated_at FROM checkin_records WHERE user_id = ? ORDER BY checkin_date DESC LIMIT 1",
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .context("查询最近打卡记录失败")?;
+    Ok(rec)
+}
+
+/// 查询用户某月的所有打卡日期
+pub async fn find_checkin_dates_by_user_month(
+    pool: &MySqlPool,
+    user_id: i32,
+    year: i32,
+    month: u32,
+) -> Result<Vec<chrono::NaiveDate>> {
+    let rows = sqlx::query("SELECT checkin_date FROM checkin_records WHERE user_id = ? AND YEAR(checkin_date) = ? AND MONTH(checkin_date) = ?")
+        .bind(user_id)
+        .bind(year)
+        .bind(month)
+        .fetch_all(pool)
+        .await
+        .context("查询月度打卡日期失败")?;
+    let mut dates = Vec::new();
+    for row in rows {
+        let d: chrono::NaiveDate = row
+            .try_get("checkin_date")
+            .context("解析打卡日期失败")?;
+        dates.push(d);
+    }
+    Ok(dates)
+}
+
+/// 统计用户累计打卡天数
+pub async fn count_checkins_by_user(pool: &MySqlPool, user_id: i32) -> Result<i64> {
+    let row = sqlx::query("SELECT COUNT(*) AS cnt FROM checkin_records WHERE user_id = ?")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .context("统计打卡天数失败")?;
+    let total = row
+        .try_get::<i64, _>("cnt")
+        .ok()
+        .or_else(|| row.try_get::<Option<i64>, _>("cnt").ok().flatten())
+        .unwrap_or(0);
+    Ok(total)
+}
+
+/// 创建打卡记录，自动计算连续天数（内部查询昨日记录）
+pub async fn create_checkin(
+    pool: &MySqlPool,
+    user_id: i32,
+    date: chrono::NaiveDate,
+    subjects: Option<&str>,
+    duration: Option<&str>,
+    note: Option<&str>,
+    tags: Option<&str>,
+) -> Result<CheckinRecord> {
+    // 计算连续天数：若昨日已打卡，则昨日连续天数 + 1，否则为 1
+    let yesterday = date - chrono::Duration::days(1);
+    let continuous_days = match find_checkin_by_user_date(pool, user_id, yesterday).await? {
+        Some(rec) => rec.continuous_days + 1,
+        None => 1,
+    };
+
+    let result = sqlx::query(
+        "INSERT INTO checkin_records (user_id, checkin_date, subjects, duration, note, tags, continuous_days) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(user_id)
+    .bind(date)
+    .bind(subjects)
+    .bind(duration)
+    .bind(note)
+    .bind(tags)
+    .bind(continuous_days)
+    .execute(pool)
+    .await
+    .context("插入打卡记录失败")?;
+
+    let id = result.last_insert_id() as i32;
+    let rec = find_checkin_by_user_date(pool, user_id, date)
+        .await?
+        .context("查询新创建打卡记录失败")?;
+    let _ = id;
+    Ok(rec)
+}
+
+/// 查询同校所有用户的打卡统计（按连续天数、总天数降序）
+pub async fn find_school_checkin_stats(
+    pool: &MySqlPool,
+    school_name: &str,
+) -> Result<Vec<CheckinStatRow>> {
+    let rows = sqlx::query_as::<_, CheckinStatRow>(
+        "SELECT u.id AS user_id, u.nickname, u.avatar_url, \
+        CASE WHEN latest.checkin_date >= DATE_SUB(CURDATE(), INTERVAL 1 DAY) THEN latest.continuous_days ELSE 0 END AS continuous_days, \
+        COALESCE(cnt.total_days, 0) AS total_days \
+        FROM users u \
+        LEFT JOIN checkin_records latest ON latest.user_id = u.id AND latest.id = (SELECT id FROM checkin_records WHERE user_id = u.id ORDER BY checkin_date DESC LIMIT 1) \
+        LEFT JOIN (SELECT user_id, COUNT(*) AS total_days FROM checkin_records GROUP BY user_id) cnt ON cnt.user_id = u.id \
+        WHERE u.school_name = ? \
+        ORDER BY continuous_days DESC, total_days DESC, u.id ASC",
+    )
+    .bind(school_name)
+    .fetch_all(pool)
+    .await
+    .context("查询同校打卡统计失败")?;
+    Ok(rows)
+}
+
+// ============ 小队模型 ============
+
+#[derive(sqlx::FromRow)]
+pub struct Team {
+    pub id: i32,
+    pub name: String,
+    pub subject: String,
+    pub description: Option<String>,
+    pub creator_id: i32,
+    pub member_count: i32,
+    pub max_members: i32,
+    pub need_approval: bool,
+    pub created_at: chrono::NaiveDateTime,
+    pub updated_at: chrono::NaiveDateTime,
+}
+
+/// 小队列表行（含统计字段与当前用户相关状态）
+#[derive(sqlx::FromRow)]
+pub struct TeamListRow {
+    pub id: i32,
+    pub name: String,
+    pub subject: String,
+    pub description: Option<String>,
+    pub creator_id: i32,
+    pub max_members: i32,
+    pub need_approval: bool,
+    pub member_count: i64,
+    pub online_count: i64,
+    pub total_checkins: i64,
+    pub pending_requests: i64,
+    pub join_status: Option<String>,
+    pub created_at: chrono::NaiveDateTime,
+}
+
+/// 小队详情行（含统计字段与当前用户是否为成员）
+#[derive(sqlx::FromRow)]
+pub struct TeamDetailRow {
+    pub id: i32,
+    pub name: String,
+    pub subject: String,
+    pub description: Option<String>,
+    pub creator_id: i32,
+    pub max_members: i32,
+    pub need_approval: bool,
+    pub member_count: i64,
+    pub online_count: i64,
+    pub total_checkins: i64,
+    pub is_member: i64,
+    pub created_at: chrono::NaiveDateTime,
+}
+
+#[derive(sqlx::FromRow)]
+pub struct TeamMemberInfo {
+    pub user_id: i32,
+    pub nickname: String,
+    pub avatar_url: Option<String>,
+    pub role: String,
+    pub joined_at: chrono::NaiveDateTime,
+}
+
+#[derive(sqlx::FromRow)]
+pub struct TeamJoinRequest {
+    pub id: i32,
+    pub team_id: i32,
+    pub user_id: i32,
+    pub status: String,
+    pub applied_at: chrono::NaiveDateTime,
+    pub processed_at: Option<chrono::NaiveDateTime>,
+}
+
+#[derive(sqlx::FromRow)]
+pub struct JoinRequestInfo {
+    pub id: i32,
+    pub user_id: i32,
+    pub nickname: String,
+    pub avatar_url: Option<String>,
+    pub applied_at: chrono::NaiveDateTime,
+}
+
+// ============ 小队查询 ============
+
+/// 小队列表查询的公共 SELECT 部分（含统计与当前用户状态）
+const TEAM_LIST_SELECT: &str = "t.id, t.name, t.subject, t.description, t.creator_id, t.max_members, t.need_approval, t.created_at, \
+(SELECT COUNT(*) FROM team_members WHERE team_id = t.id) AS member_count, \
+(SELECT COUNT(DISTINCT tm.user_id) FROM team_members tm JOIN checkin_records cr ON cr.user_id = tm.user_id AND cr.checkin_date = CURDATE() WHERE tm.team_id = t.id) AS online_count, \
+(SELECT COUNT(*) FROM checkin_records cr JOIN team_members tm ON tm.user_id = cr.user_id WHERE tm.team_id = t.id) AS total_checkins, \
+(SELECT COUNT(*) FROM team_join_requests WHERE team_id = t.id AND status = '待审核') AS pending_requests, \
+(SELECT r.status FROM team_join_requests r WHERE r.team_id = t.id AND r.user_id = ? ORDER BY r.applied_at DESC LIMIT 1) AS join_status";
+
+/// 查询用户已加入的小队
+pub async fn find_my_teams(
+    pool: &MySqlPool,
+    user_id: i32,
+    subject: Option<&str>,
+) -> Result<Vec<TeamListRow>> {
+    let pattern = subject.map(|s| format!("%{}%", s));
+    let rows = sqlx::query_as::<_, TeamListRow>(&format!(
+        "SELECT {} FROM teams t WHERE t.id IN (SELECT team_id FROM team_members WHERE user_id = ?) \
+        AND (? IS NULL OR t.subject LIKE ?) ORDER BY t.created_at DESC",
+        TEAM_LIST_SELECT
+    ))
+    .bind(user_id)      // 1. TEAM_LIST_SELECT 内部 r.user_id = ?
+    .bind(user_id)      // 2. WHERE user_id = ? (IN 子句)
+    .bind(&pattern)     // 3. ? IS NULL
+    .bind(&pattern)     // 4. t.subject LIKE ?
+    .fetch_all(pool)
+    .await
+    .context("查询我的小队失败")?;
+    Ok(rows)
+}
+
+/// 查询推荐小队（用户未加入的）
+pub async fn find_recommended_teams(
+    pool: &MySqlPool,
+    user_id: i32,
+    subject: Option<&str>,
+) -> Result<Vec<TeamListRow>> {
+    let pattern = subject.map(|s| format!("%{}%", s));
+    let rows = sqlx::query_as::<_, TeamListRow>(&format!(
+        "SELECT {} FROM teams t WHERE t.id NOT IN (SELECT team_id FROM team_members WHERE user_id = ?) \
+        AND (? IS NULL OR t.subject LIKE ?) ORDER BY t.created_at DESC",
+        TEAM_LIST_SELECT
+    ))
+    .bind(user_id)      // 1. TEAM_LIST_SELECT 内部 r.user_id = ?
+    .bind(user_id)      // 2. NOT IN 子句 user_id = ?
+    .bind(&pattern)     // 3. ? IS NULL
+    .bind(&pattern)     // 4. t.subject LIKE ?
+    .fetch_all(pool)
+    .await
+    .context("查询推荐小队失败")?;
+    Ok(rows)
+}
+
+/// 查询热门小队（用于社区主页，取全部后在内存排序取前 N）
+pub async fn find_hot_teams(pool: &MySqlPool, user_id: i32) -> Result<Vec<TeamListRow>> {
+    let rows = sqlx::query_as::<_, TeamListRow>(&format!(
+        "SELECT {} FROM teams t ORDER BY t.created_at DESC",
+        TEAM_LIST_SELECT
+    ))
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+    .context("查询热门小队失败")?;
+    Ok(rows)
+}
+
+/// 查询小队详情（含统计与当前用户是否为成员）
+pub async fn find_team_detail(
+    pool: &MySqlPool,
+    team_id: i32,
+    user_id: i32,
+) -> Result<Option<TeamDetailRow>> {
+    let row = sqlx::query_as::<_, TeamDetailRow>(
+        "SELECT t.id, t.name, t.subject, t.description, t.creator_id, t.max_members, t.need_approval, t.created_at, \
+        (SELECT COUNT(*) FROM team_members WHERE team_id = t.id) AS member_count, \
+        (SELECT COUNT(DISTINCT tm.user_id) FROM team_members tm JOIN checkin_records cr ON cr.user_id = tm.user_id AND cr.checkin_date = CURDATE() WHERE tm.team_id = t.id) AS online_count, \
+        (SELECT COUNT(*) FROM checkin_records cr JOIN team_members tm ON tm.user_id = cr.user_id WHERE tm.team_id = t.id) AS total_checkins, \
+        (SELECT COUNT(*) FROM team_members WHERE team_id = t.id AND user_id = ?) AS is_member \
+        FROM teams t WHERE t.id = ?",
+    )
+    .bind(user_id)
+    .bind(team_id)
+    .fetch_optional(pool)
+    .await
+    .context("查询小队详情失败")?;
+    Ok(row)
+}
+
+/// 查询小队成员列表
+pub async fn find_team_members(pool: &MySqlPool, team_id: i32) -> Result<Vec<TeamMemberInfo>> {
+    let rows = sqlx::query_as::<_, TeamMemberInfo>(
+        "SELECT tm.user_id, u.nickname, u.avatar_url, tm.role, tm.joined_at \
+        FROM team_members tm JOIN users u ON u.id = tm.user_id \
+        WHERE tm.team_id = ? ORDER BY CASE WHEN tm.role = '队长' THEN 0 ELSE 1 END, tm.joined_at ASC",
+    )
+    .bind(team_id)
+    .fetch_all(pool)
+    .await
+    .context("查询小队成员失败")?;
+    Ok(rows)
+}
+
+/// 查询用户在小队中的成员记录
+pub async fn find_team_member(
+    pool: &MySqlPool,
+    team_id: i32,
+    user_id: i32,
+) -> Result<Option<TeamMemberInfo>> {
+    let row = sqlx::query_as::<_, TeamMemberInfo>(
+        "SELECT tm.user_id, u.nickname, u.avatar_url, tm.role, tm.joined_at \
+        FROM team_members tm JOIN users u ON u.id = tm.user_id \
+        WHERE tm.team_id = ? AND tm.user_id = ?",
+    )
+    .bind(team_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .context("查询小队成员失败")?;
+    Ok(row)
+}
+
+/// 创建小队（事务：插入小队 + 队长成员记录）
+pub async fn create_team(
+    pool: &MySqlPool,
+    name: &str,
+    subject: &str,
+    description: Option<&str>,
+    need_approval: bool,
+    creator_id: i32,
+) -> Result<Team> {
+    let mut tx = pool.begin().await?;
+    let result = sqlx::query(
+        "INSERT INTO teams (name, subject, description, creator_id, member_count, max_members, need_approval) VALUES (?, ?, ?, ?, 1, 30, ?)",
+    )
+    .bind(name)
+    .bind(subject)
+    .bind(description)
+    .bind(creator_id)
+    .bind(need_approval)
+    .execute(&mut *tx)
+    .await
+    .context("插入小队失败")?;
+    let team_id = result.last_insert_id() as i32;
+    sqlx::query("INSERT INTO team_members (team_id, user_id, role) VALUES (?, ?, '队长')")
+        .bind(team_id)
+        .bind(creator_id)
+        .execute(&mut *tx)
+        .await
+        .context("插入队长成员记录失败")?;
+    tx.commit().await?;
+
+    let team = sqlx::query_as::<_, Team>(
+        "SELECT id, name, subject, description, creator_id, member_count, max_members, need_approval, created_at, updated_at FROM teams WHERE id = ?",
+    )
+    .bind(team_id)
+    .fetch_one(pool)
+    .await
+    .context("查询新创建小队失败")?;
+    Ok(team)
+}
+
+/// 直接加入小队（事务：插入成员 + 增加成员数）
+pub async fn join_team_directly(
+    pool: &MySqlPool,
+    team_id: i32,
+    user_id: i32,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("INSERT INTO team_members (team_id, user_id, role) VALUES (?, ?, '成员')")
+        .bind(team_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE teams SET member_count = member_count + 1 WHERE id = ?")
+        .bind(team_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// 查询用户对小队的申请记录
+pub async fn find_join_request(
+    pool: &MySqlPool,
+    team_id: i32,
+    user_id: i32,
+) -> Result<Option<TeamJoinRequest>> {
+    let row = sqlx::query_as::<_, TeamJoinRequest>(
+        "SELECT id, team_id, user_id, status, applied_at, processed_at FROM team_join_requests WHERE team_id = ? AND user_id = ?",
+    )
+    .bind(team_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .context("查询入队申请失败")?;
+    Ok(row)
+}
+
+/// 创建入队申请（待审核）
+pub async fn create_join_request(
+    pool: &MySqlPool,
+    team_id: i32,
+    user_id: i32,
+) -> Result<TeamJoinRequest> {
+    sqlx::query("INSERT INTO team_join_requests (team_id, user_id, status) VALUES (?, ?, '待审核')")
+        .bind(team_id)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .context("创建入队申请失败")?;
+    let req = find_join_request(pool, team_id, user_id)
+        .await?
+        .context("查询新创建申请失败")?;
+    Ok(req)
+}
+
+/// 将已拒绝的申请重置为待审核（重新申请）
+pub async fn reset_join_request_to_pending(
+    pool: &MySqlPool,
+    team_id: i32,
+    user_id: i32,
+) -> Result<TeamJoinRequest> {
+    sqlx::query("UPDATE team_join_requests SET status = '待审核', applied_at = NOW(), processed_at = NULL WHERE team_id = ? AND user_id = ?")
+        .bind(team_id)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .context("重置入队申请失败")?;
+    let req = find_join_request(pool, team_id, user_id)
+        .await?
+        .context("查询重置后申请失败")?;
+    Ok(req)
+}
+
+/// 查询小队的待审核申请列表
+pub async fn find_pending_join_requests(
+    pool: &MySqlPool,
+    team_id: i32,
+) -> Result<Vec<JoinRequestInfo>> {
+    let rows = sqlx::query_as::<_, JoinRequestInfo>(
+        "SELECT r.id, r.user_id, u.nickname, u.avatar_url, r.applied_at \
+        FROM team_join_requests r JOIN users u ON u.id = r.user_id \
+        WHERE r.team_id = ? AND r.status = '待审核' ORDER BY r.applied_at ASC",
+    )
+    .bind(team_id)
+    .fetch_all(pool)
+    .await
+    .context("查询待审核申请失败")?;
+    Ok(rows)
+}
+
+/// 根据 ID 查询申请记录
+pub async fn find_join_request_by_id(
+    pool: &MySqlPool,
+    application_id: i32,
+) -> Result<Option<TeamJoinRequest>> {
+    let row = sqlx::query_as::<_, TeamJoinRequest>(
+        "SELECT id, team_id, user_id, status, applied_at, processed_at FROM team_join_requests WHERE id = ?",
+    )
+    .bind(application_id)
+    .fetch_optional(pool)
+    .await
+    .context("查询申请记录失败")?;
+    Ok(row)
+}
+
+/// 通过申请（事务：更新申请状态 + 插入成员 + 增加成员数）
+pub async fn approve_join_request(
+    pool: &MySqlPool,
+    application_id: i32,
+    team_id: i32,
+    user_id: i32,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("UPDATE team_join_requests SET status = '已通过', processed_at = NOW() WHERE id = ?")
+        .bind(application_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO team_members (team_id, user_id, role) VALUES (?, ?, '成员')")
+        .bind(team_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE teams SET member_count = member_count + 1 WHERE id = ?")
+        .bind(team_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// 拒绝申请
+pub async fn reject_join_request(
+    pool: &MySqlPool,
+    application_id: i32,
+) -> Result<()> {
+    sqlx::query("UPDATE team_join_requests SET status = '已拒绝', processed_at = NOW() WHERE id = ?")
+        .bind(application_id)
+        .execute(pool)
+        .await
+        .context("拒绝入队申请失败")?;
+    Ok(())
+}
+
+/// 退出小队（事务：删除成员 + 减少成员数）
+pub async fn leave_team(pool: &MySqlPool, team_id: i32, user_id: i32) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM team_members WHERE team_id = ? AND user_id = ?")
+        .bind(team_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE teams SET member_count = GREATEST(member_count - 1, 0) WHERE id = ?")
+        .bind(team_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// 解散小队（事务：删除成员 + 申请 + 小队）
+pub async fn dissolve_team(pool: &MySqlPool, team_id: i32) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM team_members WHERE team_id = ?")
+        .bind(team_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM team_join_requests WHERE team_id = ?")
+        .bind(team_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM teams WHERE id = ?")
+        .bind(team_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+// ============ 投票模型 ============
+
+#[derive(sqlx::FromRow)]
+pub struct Vote {
+    pub id: i32,
+    pub subject: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub vote_count: i32,
+    pub status: String,
+    pub submitter_id: i32,
+    pub created_at: chrono::NaiveDateTime,
+    pub updated_at: chrono::NaiveDateTime,
+}
+
+/// 投票列表项（含当前用户是否已投票）
+#[derive(sqlx::FromRow)]
+pub struct VoteListItem {
+    pub id: i32,
+    pub subject: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub vote_count: i32,
+    pub has_voted: i64,
+}
+
+/// 我的投票记录行
+#[derive(sqlx::FromRow)]
+pub struct MyVoteRecord {
+    pub vote_id: i32,
+    pub subject: String,
+    pub title: String,
+    pub vote_count: i32,
+    pub voted_at: chrono::NaiveDateTime,
+}
+
+// ============ 投票查询 ============
+
+/// 查询已通过的考点列表（按票数降序，可按科目筛选）
+pub async fn find_passed_votes(
+    pool: &MySqlPool,
+    user_id: i32,
+    subject: Option<&str>,
+) -> Result<Vec<VoteListItem>> {
+    let pattern = subject.map(|s| format!("%{}%", s));
+    let rows = sqlx::query_as::<_, VoteListItem>(
+        "SELECT v.id, v.subject, v.title, v.description, v.vote_count, \
+        CASE WHEN vr.user_id IS NOT NULL THEN 1 ELSE 0 END AS has_voted \
+        FROM votes v LEFT JOIN vote_records vr ON vr.vote_id = v.id AND vr.user_id = ? \
+        WHERE v.status = '已通过' AND (? IS NULL OR v.subject LIKE ?) \
+        ORDER BY v.vote_count DESC, v.created_at DESC",
+    )
+    .bind(user_id)
+    .bind(&pattern)
+    .bind(&pattern)
+    .fetch_all(pool)
+    .await
+    .context("查询投票列表失败")?;
+    Ok(rows)
+}
+
+/// 统计已通过考点的总票数（用于置信度计算）
+pub async fn sum_passed_votes_count(pool: &MySqlPool) -> Result<i64> {
+    let row = sqlx::query("SELECT COALESCE(SUM(vote_count), 0) AS total FROM votes WHERE status = '已通过'")
+        .fetch_one(pool)
+        .await
+        .context("统计总票数失败")?;
+    // sqlx 对 COALESCE(SUM(...)) 可能返回 Decimal / i64 / Option<i64>，依次尝试
+    let total = row
+        .try_get::<i64, _>("total")
+        .ok()
+        .or_else(|| row.try_get::<Option<i64>, _>("total").ok().flatten())
+        .unwrap_or(0);
+    Ok(total)
+}
+
+/// 根据 ID 查询考点
+pub async fn find_vote_by_id(pool: &MySqlPool, id: i32) -> Result<Option<Vote>> {
+    let row = sqlx::query_as::<_, Vote>(
+        "SELECT id, subject, title, description, vote_count, status, submitter_id, created_at, updated_at FROM votes WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .context("查询考点失败")?;
+    Ok(row)
+}
+
+/// 提交新考点（待审核）
+pub async fn create_vote(
+    pool: &MySqlPool,
+    subject: &str,
+    title: &str,
+    description: Option<&str>,
+    submitter_id: i32,
+) -> Result<Vote> {
+    let result = sqlx::query(
+        "INSERT INTO votes (subject, title, description, vote_count, status, submitter_id) VALUES (?, ?, ?, 0, '待审核', ?)",
+    )
+    .bind(subject)
+    .bind(title)
+    .bind(description)
+    .bind(submitter_id)
+    .execute(pool)
+    .await
+    .context("插入考点失败")?;
+    let id = result.last_insert_id() as i32;
+    let vote = find_vote_by_id(pool, id)
+        .await?
+        .context("查询新创建考点失败")?;
+    Ok(vote)
+}
+
+/// 查询用户是否已对某考点投票
+pub async fn has_voted(pool: &MySqlPool, vote_id: i32, user_id: i32) -> Result<bool> {
+    let row = sqlx::query("SELECT 1 FROM vote_records WHERE vote_id = ? AND user_id = ? LIMIT 1")
+        .bind(vote_id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+        .context("查询投票记录失败")?;
+    Ok(row.is_some())
+}
+
+/// 投票（事务：插入投票记录 + 增加票数）
+pub async fn cast_vote(
+    pool: &MySqlPool,
+    vote_id: i32,
+    user_id: i32,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("INSERT INTO vote_records (vote_id, user_id) VALUES (?, ?)")
+        .bind(vote_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE votes SET vote_count = vote_count + 1 WHERE id = ?")
+        .bind(vote_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// 查询我的投票记录
+pub async fn find_my_votes(pool: &MySqlPool, user_id: i32) -> Result<Vec<MyVoteRecord>> {
+    let rows = sqlx::query_as::<_, MyVoteRecord>(
+        "SELECT v.id AS vote_id, v.subject, v.title, v.vote_count, vr.created_at AS voted_at \
+        FROM vote_records vr JOIN votes v ON v.id = vr.vote_id \
+        WHERE vr.user_id = ? ORDER BY vr.created_at DESC",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+    .context("查询我的投票记录失败")?;
+    Ok(rows)
+}
+
+/// 查询我提交的考点
+pub async fn find_my_submissions(pool: &MySqlPool, user_id: i32) -> Result<Vec<Vote>> {
+    let rows = sqlx::query_as::<_, Vote>(
+        "SELECT id, subject, title, description, vote_count, status, submitter_id, created_at, updated_at FROM votes WHERE submitter_id = ? ORDER BY created_at DESC",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+    .context("查询我提交的考点失败")?;
+    Ok(rows)
+}
+
+// ============ 资源上传/我的上传 ============
+
+/// 上传记录行
+#[derive(sqlx::FromRow)]
+pub struct UploadedResource {
+    pub id: i32,
+    pub title: String,
+    pub category: String,
+    pub status: String,
+    pub view_count: i64,
+    pub reject_reason: Option<String>,
+    pub created_at: chrono::NaiveDateTime,
+}
+
+/// 社区主页最新资料行
+#[derive(sqlx::FromRow)]
+pub struct LatestResourceRow {
+    pub id: i32,
+    pub title: String,
+    pub author: Option<String>,
+    pub created_at: chrono::NaiveDateTime,
+}
+
+/// 创建共享资料（审核中）
+pub async fn create_resource(
+    pool: &MySqlPool,
+    uploader_id: i32,
+    title: &str,
+    subject: Option<&str>,
+    category: &str,
+    type_tag: &str,
+    school_name: Option<&str>,
+    author: Option<&str>,
+    description: Option<&str>,
+    file_url: &str,
+) -> Result<i32> {
+    let result = sqlx::query(
+        "INSERT INTO resources (title, category, type_tag, school_name, major_id, author, uploader_id, subject, description, file_url, view_count, is_hot, status) \
+        VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 0, 0, '审核中')",
+    )
+    .bind(title)
+    .bind(category)
+    .bind(type_tag)
+    .bind(school_name)
+    .bind(author)
+    .bind(uploader_id)
+    .bind(subject)
+    .bind(description)
+    .bind(file_url)
+    .execute(pool)
+    .await
+    .context("插入资源失败")?;
+    Ok(result.last_insert_id() as i32)
+}
+
+/// 查询某资源的创建时间（用于上传成功响应）
+pub async fn find_resource_created_at(pool: &MySqlPool, id: i32) -> Result<Option<chrono::NaiveDateTime>> {
+    let row = sqlx::query("SELECT created_at FROM resources WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .context("查询资源创建时间失败")?;
+    if let Some(r) = row {
+        let created_at: chrono::NaiveDateTime = r
+            .try_get("created_at")
+            .context("解析资源创建时间失败")?;
+        return Ok(Some(created_at));
+    }
+    Ok(None)
+}
+
+/// 查询我的上传记录
+pub async fn find_my_uploads(pool: &MySqlPool, uploader_id: i32) -> Result<Vec<UploadedResource>> {
+    let rows = sqlx::query_as::<_, UploadedResource>(
+        "SELECT id, title, category, status, view_count, reject_reason, created_at FROM resources WHERE uploader_id = ? ORDER BY created_at DESC",
+    )
+    .bind(uploader_id)
+    .fetch_all(pool)
+    .await
+    .context("查询我的上传记录失败")?;
+    Ok(rows)
+}
+
+/// 查询本校最新已上线资料（社区主页）
+pub async fn find_latest_resources_by_school(
+    pool: &MySqlPool,
+    school_name: &str,
+    limit: i64,
+) -> Result<Vec<LatestResourceRow>> {
+    let rows = sqlx::query_as::<_, LatestResourceRow>(
+        "SELECT id, title, author, created_at FROM resources WHERE school_name = ? AND status = '已上线' ORDER BY created_at DESC LIMIT ?",
+    )
+    .bind(school_name)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .context("查询最新资料失败")?;
+    Ok(rows)
+}
+
+// ============ 积分 ============
+
+/// 增加用户积分（不存在则创建）
+pub async fn add_user_points(pool: &MySqlPool, user_id: i32, points: i32) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO user_points (user_id, total_points) VALUES (?, ?) \
+        ON DUPLICATE KEY UPDATE total_points = total_points + VALUES(total_points)",
+    )
+    .bind(user_id)
+    .bind(points)
+    .execute(pool)
+    .await
+    .context("增加积分失败")?;
     Ok(())
 }

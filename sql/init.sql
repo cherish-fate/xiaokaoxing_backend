@@ -409,3 +409,178 @@ INSERT INTO `favorites` (
     2,  -- user_id: 李四
     2   -- resource_id: 高数第1-5章复习提纲
 );
+
+-- 添加审核状态字段（直接存储中文状态）
+ALTER TABLE `resources`
+    ADD COLUMN `status` varchar(10) DEFAULT '审核中' COMMENT '审核状态（审核中/已上线/未通过）' AFTER `file_url`;
+
+-- 添加索引
+ALTER TABLE `resources` ADD INDEX `idx_status` (`status`);
+
+CREATE TABLE `checkin_records` (
+                                   `id` int NOT NULL AUTO_INCREMENT COMMENT '打卡记录ID，主键',
+                                   `user_id` int NOT NULL COMMENT '用户ID，逻辑关联users表',
+                                   `checkin_date` date NOT NULL COMMENT '打卡日期',
+                                   `subjects` json DEFAULT NULL COMMENT '学习科目列表，JSON数组（如：["高等数学","大学英语"]）',
+                                   `duration` varchar(10) DEFAULT NULL COMMENT '学习时长（30min/1h/2h/3h+）',
+                                   `note` varchar(100) DEFAULT NULL COMMENT '备注，最多100字',
+                                   `tags` json DEFAULT NULL COMMENT '快速标签，JSON数组（如：["💪 有进步","🎯 达成目标"]）',
+                                   `continuous_days` int DEFAULT '0' COMMENT '打卡时的连续天数（后端计算）',
+                                   `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                                   `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
+                                   PRIMARY KEY (`id`),
+                                   UNIQUE KEY `uk_user_date` (`user_id`, `checkin_date`) COMMENT '同一用户同一天只能打卡一次',
+                                   KEY `idx_user_id` (`user_id`) COMMENT '用户ID索引',
+                                   KEY `idx_checkin_date` (`checkin_date`) COMMENT '打卡日期索引'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='打卡记录表';
+
+CREATE TABLE `teams` (
+                         `id` int NOT NULL AUTO_INCREMENT COMMENT '小队ID，主键',
+                         `name` varchar(20) NOT NULL COMMENT '小队名称，最多20字',
+                         `subject` varchar(50) NOT NULL COMMENT '关联科目',
+                         `description` varchar(100) DEFAULT NULL COMMENT '小队简介，最多100字',
+                         `creator_id` int NOT NULL COMMENT '创建者用户ID，逻辑关联users表',
+                         `member_count` int DEFAULT '1' COMMENT '当前成员数（含创建者）',
+                         `max_members` int DEFAULT '30' COMMENT '成员上限，固定30',
+                         `need_approval` tinyint(1) DEFAULT '1' COMMENT '是否需要审核加入（1-需要，0-不需要）',
+                         `checkin_rate` decimal(5,2) DEFAULT '0.00' COMMENT '今日打卡率（百分比，冗余字段）',
+                         `total_checkins` int DEFAULT '0' COMMENT '总打卡次数（冗余字段）',
+                         `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                         `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
+                         PRIMARY KEY (`id`),
+                         KEY `idx_subject` (`subject`) COMMENT '科目索引',
+                         KEY `idx_creator_id` (`creator_id`) COMMENT '创建者索引',
+                         KEY `idx_checkin_rate` (`checkin_rate`) COMMENT '打卡率索引，用于热门排序'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='备考小队表';
+
+CREATE TABLE `team_members` (
+                                `id` int NOT NULL AUTO_INCREMENT COMMENT '成员记录ID，主键',
+                                `team_id` int NOT NULL COMMENT '小队ID，逻辑关联teams表',
+                                `user_id` int NOT NULL COMMENT '用户ID，逻辑关联users表',
+                                `role` varchar(10) NOT NULL DEFAULT '成员' COMMENT '角色（队长/成员）',
+                                `joined_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '加入时间',
+                                PRIMARY KEY (`id`),
+                                UNIQUE KEY `uk_team_user` (`team_id`, `user_id`) COMMENT '唯一约束，防止重复加入',
+                                KEY `idx_team_id` (`team_id`) COMMENT '小队ID索引',
+                                KEY `idx_user_id` (`user_id`) COMMENT '用户ID索引'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='小队成员表';
+
+CREATE TABLE `team_join_requests` (
+                                      `id` int NOT NULL AUTO_INCREMENT COMMENT '申请记录ID，主键',
+                                      `team_id` int NOT NULL COMMENT '小队ID，逻辑关联teams表',
+                                      `user_id` int NOT NULL COMMENT '申请用户ID，逻辑关联users表',
+                                      `status` varchar(10) NOT NULL DEFAULT '待审核' COMMENT '申请状态（待审核/已通过/已拒绝）',
+                                      `applied_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '申请时间',
+                                      `processed_at` datetime DEFAULT NULL COMMENT '处理时间（审核通过/拒绝的时间）',
+                                      PRIMARY KEY (`id`),
+                                      UNIQUE KEY `uk_team_user` (`team_id`, `user_id`) COMMENT '同一用户对小队的申请唯一，防止重复申请',
+                                      KEY `idx_team_id` (`team_id`) COMMENT '小队ID索引',
+                                      KEY `idx_user_id` (`user_id`) COMMENT '用户ID索引',
+                                      KEY `idx_status` (`status`) COMMENT '状态索引'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='入队申请表';
+
+CREATE TABLE `votes` (
+                         `id` int NOT NULL AUTO_INCREMENT COMMENT '投票ID，主键',
+                         `subject` varchar(50) NOT NULL COMMENT '科目',
+                         `title` varchar(30) NOT NULL COMMENT '考点名称，最多30字',
+                         `description` varchar(200) DEFAULT NULL COMMENT '补充说明，最多200字',
+                         `vote_count` int DEFAULT '0' COMMENT '总票数（冗余字段）',
+                         `confidence` decimal(5,2) DEFAULT '0.00' COMMENT '置信度（百分比，冗余字段）',
+                         `status` varchar(10) NOT NULL DEFAULT '待审核' COMMENT '审核状态（待审核/已通过/已拒绝）',
+                         `submitter_id` int NOT NULL COMMENT '提交者用户ID，逻辑关联users表',
+                         `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                         `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
+                         PRIMARY KEY (`id`),
+                         KEY `idx_subject` (`subject`) COMMENT '科目索引',
+                         KEY `idx_status` (`status`) COMMENT '状态索引',
+                         KEY `idx_vote_count` (`vote_count`) COMMENT '票数索引，用于热门排序'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='考点投票表';
+
+CREATE TABLE `vote_records` (
+                                `id` int NOT NULL AUTO_INCREMENT COMMENT '投票记录ID，主键',
+                                `vote_id` int NOT NULL COMMENT '投票ID，逻辑关联votes表',
+                                `user_id` int NOT NULL COMMENT '投票用户ID，逻辑关联users表',
+                                `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '投票时间',
+                                PRIMARY KEY (`id`),
+                                UNIQUE KEY `uk_vote_user` (`vote_id`, `user_id`) COMMENT '同一用户对同一考点只能投一票',
+                                KEY `idx_vote_id` (`vote_id`) COMMENT '投票ID索引',
+                                KEY `idx_user_id` (`user_id`) COMMENT '用户ID索引'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='投票记录表';
+
+-- 5个小队，其中3个创建者为user_id=7
+INSERT INTO teams (name, subject, description, creator_id, member_count, need_approval, checkin_rate, total_checkins)
+VALUES
+    ('高数突击队', '高等数学', '一起攻克高数难关', 7, 1, 1, 0.00, 0),
+    ('英语打卡营', '大学英语', '每日背单词打卡', 7, 1, 1, 0.00, 0),
+    ('计科期末冲刺', '计算机', '计科专业备考互助', 7, 1, 0, 0.00, 0),
+    ('线代过关', '线性代数', '线代不挂科', 1, 1, 1, 0.00, 0),
+    ('大物答疑', '大学物理', '物理难题讨论', 2, 1, 1, 0.00, 0);
+
+-- 5个投票项目，其中3个提交者为user_id=7，并设置为已通过
+INSERT INTO votes (subject, title, description, vote_count, confidence, status, submitter_id)
+VALUES
+    ('高数', '极限与连续', '常考大题，年年必出', 10, 85.00, '已通过', 7),
+    ('线代', '矩阵运算', '基础运算，必须掌握', 8, 72.00, '已通过', 7),
+    ('数据结构', '二叉树遍历', '重点算法，频繁考察', 6, 60.00, '已通过', 7),
+    ('英语', '阅读理解', '高频题型，需强化', 0, 0.00, '待审核', 1),
+    ('物理', '电磁感应', '难点，易出大题', 0, 0.00, '待审核', 2);
+
+-- 5条打卡记录，4条user_id=7，1条user_id=1
+INSERT INTO checkin_records (user_id, checkin_date, subjects, duration, note, tags, continuous_days)
+VALUES
+    (7, '2026-08-01', '["高等数学"]', '1h', '复习了极限与连续', '["💪 有进步"]', 1),
+    (7, '2026-08-02', '["高等数学","大学英语"]', '2h', '做了高数题和英语阅读', '["🎯 达成目标"]', 2),
+    (7, '2026-08-03', '["线性代数"]', '30min', '预习了矩阵运算', '["❓ 有疑问"]', 3),
+    (7, '2026-08-04', '["数据结构"]', '3h+', '完成了二叉树遍历练习', '["💪 有进步","🎯 达成目标"]', 4),
+    (1, '2026-08-05', '["高等数学"]', '1h', '复习高数第一章', '["💪 有进步"]', 1);
+
+-- 5条成员记录，3条user_id=7（作为队长），2条其他用户加入
+-- 注意：team_id 对应上一步插入的 teams 的 id（此处假设自增后 id 为 1~5）
+INSERT INTO team_members (team_id, user_id, role)
+VALUES
+    (1, 7, '队长'),   -- 高数突击队 队长
+    (2, 7, '队长'),   -- 英语打卡营 队长
+    (3, 7, '队长'),   -- 计科期末冲刺 队长
+    (1, 1, '成员'),   -- 用户1加入高数突击队
+    (2, 2, '成员');   -- 用户2加入英语打卡营
+
+-- 5条申请记录，3条user_id=7，2条其他用户
+-- 关联的 team_id 同样为 1~5
+INSERT INTO team_join_requests (team_id, user_id, status, processed_at)
+VALUES
+    (4, 7, '待审核', NULL),                          -- 申请加入线代过关
+    (5, 7, '已通过', NOW()),                        -- 申请加入大物答疑
+    (1, 7, '已拒绝', NOW()),                        -- 申请加入自己创建的小队（被拒）
+    (1, 3, '待审核', NULL),                         -- 用户3申请高数突击队
+    (2, 4, '已通过', NOW());                        -- 用户4申请英语打卡营
+
+-- 5条投票记录，3条user_id=7，2条其他用户
+-- 关联的 vote_id 对应 votes 的 id（假设自增后为 1~5）
+INSERT INTO vote_records (vote_id, user_id)
+VALUES
+    (1, 7),   -- 用户7投高数-极限与连续
+    (2, 7),   -- 用户7投线代-矩阵运算
+    (4, 7),   -- 用户7投英语-阅读理解（虽然该投票待审核，但仍可投，实际业务中只允许投已通过的，此处测试）
+    (1, 1),   -- 用户1投高数-极限与连续
+    (2, 2);   -- 用户2投线代-矩阵运算
+
+-- ============================================
+-- 社区模块扩展字段
+-- ============================================
+
+-- resources 表扩展：上传者ID（用于"我的上传"查询）、所属科目、审核拒绝原因
+ALTER TABLE `resources`
+    ADD COLUMN `uploader_id` int DEFAULT NULL COMMENT '上传者用户ID，逻辑关联users表' AFTER `author`;
+ALTER TABLE `resources`
+    ADD COLUMN `subject` varchar(50) DEFAULT NULL COMMENT '所属科目' AFTER `category`;
+ALTER TABLE `resources`
+    ADD COLUMN `reject_reason` varchar(500) DEFAULT NULL COMMENT '审核拒绝原因' AFTER `status`;
+ALTER TABLE `resources` ADD INDEX `idx_uploader_id` (`uploader_id`);
+
+-- 用户积分表（社区模块打卡等奖励积分累计）
+CREATE TABLE IF NOT EXISTS `user_points` (
+    `user_id` int NOT NULL COMMENT '用户ID，主键，逻辑关联users表',
+    `total_points` int NOT NULL DEFAULT '0' COMMENT '累计积分',
+    `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
+    PRIMARY KEY (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户积分表';
