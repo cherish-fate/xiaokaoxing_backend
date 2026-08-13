@@ -1615,3 +1615,984 @@ pub async fn add_user_points(pool: &MySqlPool, user_id: i32, points: i32) -> Res
     .context("增加积分失败")?;
     Ok(())
 }
+
+// ============ 工具模块：每日一问 ============
+
+#[derive(sqlx::FromRow)]
+pub struct DailyQuestion {
+    pub id: i32,
+    pub subject: String,
+    pub question: String,
+    pub options: Option<String>,
+    pub answer: String,
+    pub explanation: Option<String>,
+    pub difficulty: i32,
+    pub date: chrono::NaiveDate,
+    pub created_at: chrono::NaiveDateTime,
+}
+
+#[derive(sqlx::FromRow)]
+pub struct QuestionRecord {
+    pub id: i32,
+    pub user_id: i32,
+    pub question_id: i32,
+    pub answered_at: chrono::NaiveDateTime,
+    pub selected: String,
+    pub is_correct: bool,
+}
+
+#[derive(sqlx::FromRow)]
+pub struct QuestionHistoryRow {
+    pub id: i32,
+    pub question_id: i32,
+    pub subject: String,
+    pub selected: String,
+    pub is_correct: bool,
+    pub answered_at: chrono::NaiveDateTime,
+}
+
+pub async fn find_daily_question_by_id(
+    pool: &MySqlPool,
+    id: i32,
+) -> Result<Option<DailyQuestion>> {
+    let row = sqlx::query_as::<_, DailyQuestion>(
+        "SELECT id, subject, question, CAST(options AS CHAR) AS options, answer, explanation, difficulty, date, created_at \
+        FROM daily_questions WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .context("查询每日一题失败")?;
+    Ok(row)
+}
+
+pub async fn find_daily_question_by_date(
+    pool: &MySqlPool,
+    date: chrono::NaiveDate,
+) -> Result<Option<DailyQuestion>> {
+    let row = sqlx::query_as::<_, DailyQuestion>(
+        "SELECT id, subject, question, CAST(options AS CHAR) AS options, answer, explanation, difficulty, date, created_at \
+        FROM daily_questions WHERE date = ?",
+    )
+    .bind(date)
+    .fetch_optional(pool)
+    .await
+    .context("查询今日每日一题失败")?;
+    Ok(row)
+}
+
+pub async fn find_question_record(
+    pool: &MySqlPool,
+    user_id: i32,
+    question_id: i32,
+) -> Result<Option<QuestionRecord>> {
+    let row = sqlx::query_as::<_, QuestionRecord>(
+        "SELECT id, user_id, question_id, answered_at, selected, is_correct \
+        FROM question_records WHERE user_id = ? AND question_id = ?",
+    )
+    .bind(user_id)
+    .bind(question_id)
+    .fetch_optional(pool)
+    .await
+    .context("查询答题记录失败")?;
+    Ok(row)
+}
+
+pub async fn find_question_record_by_id(
+    pool: &MySqlPool,
+    id: i32,
+) -> Result<Option<QuestionRecord>> {
+    let row = sqlx::query_as::<_, QuestionRecord>(
+        "SELECT id, user_id, question_id, answered_at, selected, is_correct \
+        FROM question_records WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .context("查询答题记录失败")?;
+    Ok(row)
+}
+
+pub async fn create_question_record(
+    pool: &MySqlPool,
+    user_id: i32,
+    question_id: i32,
+    selected: &str,
+    is_correct: bool,
+) -> Result<QuestionRecord> {
+    let result = sqlx::query(
+        "INSERT INTO question_records (user_id, question_id, selected, is_correct) VALUES (?, ?, ?, ?)",
+    )
+    .bind(user_id)
+    .bind(question_id)
+    .bind(selected)
+    .bind(is_correct)
+    .execute(pool)
+    .await
+    .context("插入答题记录失败")?;
+    let id = result.last_insert_id() as i32;
+    let record = find_question_record_by_id(pool, id)
+        .await?
+        .context("查询新建答题记录失败")?;
+    Ok(record)
+}
+
+pub async fn find_question_records_by_month(
+    pool: &MySqlPool,
+    user_id: i32,
+    start: chrono::NaiveDateTime,
+    end: chrono::NaiveDateTime,
+    only_wrong: bool,
+) -> Result<Vec<QuestionHistoryRow>> {
+    let rows = if only_wrong {
+        sqlx::query_as::<_, QuestionHistoryRow>(
+            "SELECT qr.id, qr.question_id, dq.subject, qr.selected, qr.is_correct, qr.answered_at \
+            FROM question_records qr JOIN daily_questions dq ON dq.id = qr.question_id \
+            WHERE qr.user_id = ? AND qr.answered_at >= ? AND qr.answered_at < ? AND qr.is_correct = 0 \
+            ORDER BY qr.answered_at DESC",
+        )
+    } else {
+        sqlx::query_as::<_, QuestionHistoryRow>(
+            "SELECT qr.id, qr.question_id, dq.subject, qr.selected, qr.is_correct, qr.answered_at \
+            FROM question_records qr JOIN daily_questions dq ON dq.id = qr.question_id \
+            WHERE qr.user_id = ? AND qr.answered_at >= ? AND qr.answered_at < ? \
+            ORDER BY qr.answered_at DESC",
+        )
+    };
+    let rows = rows
+        .bind(user_id)
+        .bind(start)
+        .bind(end)
+        .fetch_all(pool)
+        .await
+        .context("查询答题历史失败")?;
+    Ok(rows)
+}
+
+pub async fn find_question_dates_by_month(
+    pool: &MySqlPool,
+    user_id: i32,
+    start: chrono::NaiveDateTime,
+    end: chrono::NaiveDateTime,
+) -> Result<Vec<chrono::NaiveDate>> {
+    let rows = sqlx::query(
+        "SELECT DISTINCT DATE(answered_at) AS d FROM question_records \
+        WHERE user_id = ? AND answered_at >= ? AND answered_at < ?",
+    )
+    .bind(user_id)
+    .bind(start)
+    .bind(end)
+    .fetch_all(pool)
+    .await
+    .context("查询答题日期失败")?;
+    let mut dates = Vec::new();
+    for row in rows {
+        let d: chrono::NaiveDate = row.try_get("d").context("解析答题日期失败")?;
+        dates.push(d);
+    }
+    Ok(dates)
+}
+
+// ============ 工具模块：学习笔记 ============
+
+#[derive(sqlx::FromRow)]
+pub struct Note {
+    pub id: i32,
+    pub user_id: i32,
+    pub title: String,
+    pub content: Option<String>,
+    pub tags: Option<String>,
+    pub is_pinned: bool,
+    pub source_type: String,
+    pub source_id: Option<i32>,
+    pub created_at: chrono::NaiveDateTime,
+    pub updated_at: chrono::NaiveDateTime,
+}
+
+pub async fn find_note_by_id(pool: &MySqlPool, id: i32) -> Result<Option<Note>> {
+    let row = sqlx::query_as::<_, Note>(
+        "SELECT id, user_id, title, CAST(content AS CHAR) AS content, CAST(tags AS CHAR) AS tags, is_pinned, source_type, source_id, created_at, updated_at \
+        FROM notes WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .context("查询笔记失败")?;
+    Ok(row)
+}
+
+pub async fn count_notes(
+    pool: &MySqlPool,
+    user_id: i32,
+    tag: Option<&str>,
+    keyword: Option<&str>,
+) -> Result<i64> {
+    let mut sql = String::from("SELECT COUNT(*) AS cnt FROM notes WHERE user_id = ?");
+    if tag.is_some() {
+        sql.push_str(" AND JSON_CONTAINS(tags, JSON_QUOTE(?))");
+    }
+    if keyword.is_some() {
+        sql.push_str(
+            " AND (title LIKE CONCAT('%', ?, '%') OR content LIKE CONCAT('%', ?, '%'))",
+        );
+    }
+    let mut query = sqlx::query(&sql).bind(user_id);
+    if let Some(t) = tag {
+        query = query.bind(t);
+    }
+    if let Some(k) = keyword {
+        query = query.bind(k).bind(k);
+    }
+    let row = query.fetch_one(pool).await.context("统计笔记数量失败")?;
+    let total = row
+        .try_get::<i64, _>("cnt")
+        .ok()
+        .or_else(|| row.try_get::<Option<i64>, _>("cnt").ok().flatten())
+        .unwrap_or(0);
+    Ok(total)
+}
+
+pub async fn find_notes(
+    pool: &MySqlPool,
+    user_id: i32,
+    tag: Option<&str>,
+    keyword: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<Note>> {
+    let mut sql = String::from(
+        "SELECT id, user_id, title, CAST(content AS CHAR) AS content, CAST(tags AS CHAR) AS tags, is_pinned, source_type, source_id, created_at, updated_at \
+        FROM notes WHERE user_id = ?",
+    );
+    if tag.is_some() {
+        sql.push_str(" AND JSON_CONTAINS(tags, JSON_QUOTE(?))");
+    }
+    if keyword.is_some() {
+        sql.push_str(
+            " AND (title LIKE CONCAT('%', ?, '%') OR content LIKE CONCAT('%', ?, '%'))",
+        );
+    }
+    sql.push_str(" ORDER BY is_pinned DESC, updated_at DESC, id DESC LIMIT ? OFFSET ?");
+
+    let mut query = sqlx::query_as::<_, Note>(&sql).bind(user_id);
+    if let Some(t) = tag {
+        query = query.bind(t);
+    }
+    if let Some(k) = keyword {
+        query = query.bind(k).bind(k);
+    }
+    let rows = query
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await
+        .context("查询笔记列表失败")?;
+    Ok(rows)
+}
+
+pub async fn create_note(
+    pool: &MySqlPool,
+    user_id: i32,
+    title: &str,
+    content: Option<&str>,
+    tags: Option<&str>,
+    source_type: &str,
+    source_id: Option<i32>,
+) -> Result<Note> {
+    let result = sqlx::query(
+        "INSERT INTO notes (user_id, title, content, tags, source_type, source_id) VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(user_id)
+    .bind(title)
+    .bind(content)
+    .bind(tags)
+    .bind(source_type)
+    .bind(source_id)
+    .execute(pool)
+    .await
+    .context("插入笔记失败")?;
+    let id = result.last_insert_id() as i32;
+    let note = find_note_by_id(pool, id)
+        .await?
+        .context("查询新建笔记失败")?;
+    Ok(note)
+}
+
+pub async fn update_note(
+    pool: &MySqlPool,
+    id: i32,
+    user_id: i32,
+    title: &str,
+    content: Option<&str>,
+    tags: Option<&str>,
+    is_pinned: bool,
+) -> Result<Option<Note>> {
+    let result = sqlx::query(
+        "UPDATE notes SET title = ?, content = ?, tags = ?, is_pinned = ?, updated_at = NOW() \
+        WHERE id = ? AND user_id = ?",
+    )
+    .bind(title)
+    .bind(content)
+    .bind(tags)
+    .bind(is_pinned)
+    .bind(id)
+    .bind(user_id)
+    .execute(pool)
+    .await
+    .context("更新笔记失败")?;
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+    find_note_by_id(pool, id).await
+}
+
+pub async fn delete_note(pool: &MySqlPool, id: i32, user_id: i32) -> Result<bool> {
+    let result = sqlx::query("DELETE FROM notes WHERE id = ? AND user_id = ?")
+        .bind(id)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .context("删除笔记失败")?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn count_notes_by_user(pool: &MySqlPool, user_id: i32) -> Result<i64> {
+    count_notes(pool, user_id, None, None).await
+}
+
+pub async fn find_note_tags_by_user(pool: &MySqlPool, user_id: i32) -> Result<Vec<String>> {
+    let rows = sqlx::query(
+        "SELECT CAST(tags AS CHAR) AS tags FROM notes WHERE user_id = ? AND tags IS NOT NULL",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+    .context("查询笔记标签失败")?;
+    let mut tags = Vec::new();
+    for row in rows {
+        let t: String = row.try_get("tags").context("解析笔记标签失败")?;
+        tags.push(t);
+    }
+    Ok(tags)
+}
+
+// ============ 工具模块：绩点计算器 ============
+
+#[derive(sqlx::FromRow)]
+pub struct Semester {
+    pub id: i32,
+    pub user_id: i32,
+    pub name: String,
+    pub year: i32,
+    pub created_at: chrono::NaiveDateTime,
+}
+
+#[derive(sqlx::FromRow)]
+pub struct SemesterWithCount {
+    pub id: i32,
+    pub name: String,
+    pub year: i32,
+    pub course_count: i64,
+}
+
+#[derive(sqlx::FromRow)]
+pub struct CourseGrade {
+    pub id: i32,
+    pub semester_id: i32,
+    pub name: String,
+    pub credit: String,
+    pub score: Option<String>,
+    pub grade: Option<String>,
+    pub r#type: String,
+    pub gpa: Option<String>,
+    pub created_at: chrono::NaiveDateTime,
+    pub updated_at: chrono::NaiveDateTime,
+}
+
+pub async fn find_semesters_with_counts(
+    pool: &MySqlPool,
+    user_id: i32,
+) -> Result<Vec<SemesterWithCount>> {
+    let rows = sqlx::query_as::<_, SemesterWithCount>(
+        "SELECT s.id, s.name, s.year, COUNT(c.id) AS course_count \
+        FROM semesters s LEFT JOIN course_grades c ON c.semester_id = s.id \
+        WHERE s.user_id = ? \
+        GROUP BY s.id, s.name, s.year, s.created_at \
+        ORDER BY s.year DESC, s.created_at DESC, s.id DESC",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+    .context("查询学期列表失败")?;
+    Ok(rows)
+}
+
+pub async fn find_semester_by_id(pool: &MySqlPool, id: i32) -> Result<Option<Semester>> {
+    let row = sqlx::query_as::<_, Semester>(
+        "SELECT id, user_id, name, year, created_at FROM semesters WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .context("查询学期失败")?;
+    Ok(row)
+}
+
+pub async fn create_semester(
+    pool: &MySqlPool,
+    user_id: i32,
+    name: &str,
+    year: i32,
+) -> Result<Semester> {
+    let result = sqlx::query("INSERT INTO semesters (user_id, name, year) VALUES (?, ?, ?)")
+        .bind(user_id)
+        .bind(name)
+        .bind(year)
+        .execute(pool)
+        .await
+        .context("创建学期失败")?;
+    let id = result.last_insert_id() as i32;
+    let semester = find_semester_by_id(pool, id)
+        .await?
+        .context("查询新建学期失败")?;
+    Ok(semester)
+}
+
+pub async fn delete_semester_with_courses(
+    pool: &MySqlPool,
+    semester_id: i32,
+) -> Result<bool> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM course_grades WHERE semester_id = ?")
+        .bind(semester_id)
+        .execute(&mut *tx)
+        .await
+        .context("删除学期课程失败")?;
+    let result = sqlx::query("DELETE FROM semesters WHERE id = ?")
+        .bind(semester_id)
+        .execute(&mut *tx)
+        .await
+        .context("删除学期失败")?;
+    tx.commit().await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn find_courses_by_semester(
+    pool: &MySqlPool,
+    semester_id: i32,
+) -> Result<Vec<CourseGrade>> {
+    let rows = sqlx::query_as::<_, CourseGrade>(
+        "SELECT id, semester_id, name, CAST(credit AS CHAR) AS credit, CAST(score AS CHAR) AS score, grade, type, CAST(gpa AS CHAR) AS gpa, created_at, updated_at \
+        FROM course_grades WHERE semester_id = ? ORDER BY id ASC",
+    )
+    .bind(semester_id)
+    .fetch_all(pool)
+    .await
+    .context("查询课程列表失败")?;
+    Ok(rows)
+}
+
+pub async fn find_course_by_id(pool: &MySqlPool, id: i32) -> Result<Option<CourseGrade>> {
+    let row = sqlx::query_as::<_, CourseGrade>(
+        "SELECT id, semester_id, name, CAST(credit AS CHAR) AS credit, CAST(score AS CHAR) AS score, grade, type, CAST(gpa AS CHAR) AS gpa, created_at, updated_at \
+        FROM course_grades WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .context("查询课程失败")?;
+    Ok(row)
+}
+
+pub async fn create_course(
+    pool: &MySqlPool,
+    semester_id: i32,
+    name: &str,
+    credit: &str,
+    score: Option<&str>,
+    grade: Option<&str>,
+    r#type: &str,
+    gpa: Option<&str>,
+) -> Result<CourseGrade> {
+    let result = sqlx::query(
+        "INSERT INTO course_grades (semester_id, name, credit, score, grade, type, gpa) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(semester_id)
+    .bind(name)
+    .bind(credit)
+    .bind(score)
+    .bind(grade)
+    .bind(r#type)
+    .bind(gpa)
+    .execute(pool)
+    .await
+    .context("创建课程失败")?;
+    let id = result.last_insert_id() as i32;
+    let course = find_course_by_id(pool, id)
+        .await?
+        .context("查询新建课程失败")?;
+    Ok(course)
+}
+
+pub async fn update_course(
+    pool: &MySqlPool,
+    id: i32,
+    semester_id: i32,
+    name: &str,
+    credit: &str,
+    score: Option<&str>,
+    grade: Option<&str>,
+    r#type: &str,
+    gpa: Option<&str>,
+) -> Result<Option<CourseGrade>> {
+    let result = sqlx::query(
+        "UPDATE course_grades SET semester_id = ?, name = ?, credit = ?, score = ?, grade = ?, type = ?, gpa = ?, updated_at = NOW() WHERE id = ?",
+    )
+    .bind(semester_id)
+    .bind(name)
+    .bind(credit)
+    .bind(score)
+    .bind(grade)
+    .bind(r#type)
+    .bind(gpa)
+    .bind(id)
+    .execute(pool)
+    .await
+    .context("更新课程失败")?;
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+    find_course_by_id(pool, id).await
+}
+
+pub async fn delete_course(pool: &MySqlPool, id: i32) -> Result<bool> {
+    let result = sqlx::query("DELETE FROM course_grades WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await
+        .context("删除课程失败")?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn count_courses_by_semester(pool: &MySqlPool, semester_id: i32) -> Result<i64> {
+    let row = sqlx::query("SELECT COUNT(*) AS cnt FROM course_grades WHERE semester_id = ?")
+        .bind(semester_id)
+        .fetch_one(pool)
+        .await
+        .context("统计课程数量失败")?;
+    let total = row
+        .try_get::<i64, _>("cnt")
+        .ok()
+        .or_else(|| row.try_get::<Option<i64>, _>("cnt").ok().flatten())
+        .unwrap_or(0);
+    Ok(total)
+}
+
+// ============ 工具模块：个人文档库 ============
+
+#[derive(sqlx::FromRow)]
+pub struct Document {
+    pub id: i32,
+    pub user_id: i32,
+    pub name: String,
+    pub file_url: String,
+    pub file_size: i64,
+    pub file_type: String,
+    pub category: Option<String>,
+    pub is_offline: bool,
+    pub last_opened_at: Option<chrono::NaiveDateTime>,
+    pub created_at: chrono::NaiveDateTime,
+    pub updated_at: chrono::NaiveDateTime,
+}
+
+#[derive(sqlx::FromRow)]
+pub struct DocumentCategoryCount {
+    pub category: Option<String>,
+    pub count: i64,
+}
+
+pub async fn find_document_by_id(pool: &MySqlPool, id: i32) -> Result<Option<Document>> {
+    let row = sqlx::query_as::<_, Document>(
+        "SELECT id, user_id, name, file_url, file_size, file_type, category, is_offline, last_opened_at, created_at, updated_at \
+        FROM documents WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .context("查询文档失败")?;
+    Ok(row)
+}
+
+pub async fn count_documents(
+    pool: &MySqlPool,
+    user_id: i32,
+    category: Option<&str>,
+) -> Result<i64> {
+    let mut sql = String::from("SELECT COUNT(*) AS cnt FROM documents WHERE user_id = ?");
+    if let Some(c) = category {
+        if c != "全部" {
+            sql.push_str(" AND category = ?");
+        }
+    }
+    let mut query = sqlx::query(&sql).bind(user_id);
+    if let Some(c) = category {
+        if c != "全部" {
+            query = query.bind(c);
+        }
+    }
+    let row = query.fetch_one(pool).await.context("统计文档数量失败")?;
+    let total = row
+        .try_get::<i64, _>("cnt")
+        .ok()
+        .or_else(|| row.try_get::<Option<i64>, _>("cnt").ok().flatten())
+        .unwrap_or(0);
+    Ok(total)
+}
+
+pub async fn find_documents(
+    pool: &MySqlPool,
+    user_id: i32,
+    category: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<Document>> {
+    let mut sql = String::from(
+        "SELECT id, user_id, name, file_url, file_size, file_type, category, is_offline, last_opened_at, created_at, updated_at \
+        FROM documents WHERE user_id = ?",
+    );
+    let mut has_category = false;
+    if let Some(c) = category {
+        if c != "全部" {
+            sql.push_str(" AND category = ?");
+            has_category = true;
+        }
+    }
+    sql.push_str(" ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?");
+    let mut query = sqlx::query_as::<_, Document>(&sql).bind(user_id);
+    if has_category {
+        query = query.bind(category.unwrap_or_default());
+    }
+    let rows = query
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await
+        .context("查询文档列表失败")?;
+    Ok(rows)
+}
+
+pub async fn sum_document_sizes(pool: &MySqlPool, user_id: i32) -> Result<i64> {
+    let row = sqlx::query(
+        "SELECT COALESCE(SUM(file_size), 0) AS total FROM documents WHERE user_id = ?",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+    .context("统计文档存储大小失败")?;
+    let total = row
+        .try_get::<i64, _>("total")
+        .ok()
+        .or_else(|| row.try_get::<Option<i64>, _>("total").ok().flatten())
+        .unwrap_or(0);
+    Ok(total)
+}
+
+pub async fn find_document_category_counts(
+    pool: &MySqlPool,
+    user_id: i32,
+) -> Result<Vec<DocumentCategoryCount>> {
+    let rows = sqlx::query_as::<_, DocumentCategoryCount>(
+        "SELECT category, COUNT(*) AS count FROM documents WHERE user_id = ? GROUP BY category",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+    .context("统计文档分类失败")?;
+    Ok(rows)
+}
+
+pub async fn update_document_offline(
+    pool: &MySqlPool,
+    id: i32,
+    user_id: i32,
+    is_offline: bool,
+) -> Result<Option<Document>> {
+    let result = sqlx::query(
+        "UPDATE documents SET is_offline = ?, updated_at = NOW() WHERE id = ? AND user_id = ?",
+    )
+    .bind(is_offline)
+    .bind(id)
+    .bind(user_id)
+    .execute(pool)
+    .await
+    .context("更新文档离线状态失败")?;
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+    find_document_by_id(pool, id).await
+}
+
+pub async fn delete_document(pool: &MySqlPool, id: i32, user_id: i32) -> Result<bool> {
+    let result = sqlx::query("DELETE FROM documents WHERE id = ? AND user_id = ?")
+        .bind(id)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .context("删除文档失败")?;
+    Ok(result.rows_affected() > 0)
+}
+
+// ============ 工具模块：精选书签 ============
+
+#[derive(sqlx::FromRow)]
+pub struct Bookmark {
+    pub id: i32,
+    pub user_id: i32,
+    pub quote: String,
+    pub source_title: String,
+    pub source_url: Option<String>,
+    pub source_type: String,
+    pub source_id: Option<i32>,
+    pub anchor: Option<String>,
+    pub note: Option<String>,
+    pub color: Option<String>,
+    pub created_at: chrono::NaiveDateTime,
+}
+
+pub async fn find_bookmark_by_id(pool: &MySqlPool, id: i32) -> Result<Option<Bookmark>> {
+    let row = sqlx::query_as::<_, Bookmark>(
+        "SELECT id, user_id, quote, source_title, source_url, source_type, source_id, anchor, note, color, created_at \
+        FROM bookmarks WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .context("查询书签失败")?;
+    Ok(row)
+}
+
+pub async fn count_bookmarks(
+    pool: &MySqlPool,
+    user_id: i32,
+    color: Option<&str>,
+    keyword: Option<&str>,
+) -> Result<i64> {
+    let mut sql = String::from("SELECT COUNT(*) AS cnt FROM bookmarks WHERE user_id = ?");
+    if color.is_some() {
+        sql.push_str(" AND color = ?");
+    }
+    if keyword.is_some() {
+        sql.push_str(
+            " AND (quote LIKE CONCAT('%', ?, '%') OR note LIKE CONCAT('%', ?, '%'))",
+        );
+    }
+    let mut query = sqlx::query(&sql).bind(user_id);
+    if let Some(c) = color {
+        query = query.bind(c);
+    }
+    if let Some(k) = keyword {
+        query = query.bind(k).bind(k);
+    }
+    let row = query.fetch_one(pool).await.context("统计书签数量失败")?;
+    let total = row
+        .try_get::<i64, _>("cnt")
+        .ok()
+        .or_else(|| row.try_get::<Option<i64>, _>("cnt").ok().flatten())
+        .unwrap_or(0);
+    Ok(total)
+}
+
+pub async fn find_bookmarks(
+    pool: &MySqlPool,
+    user_id: i32,
+    color: Option<&str>,
+    keyword: Option<&str>,
+) -> Result<Vec<Bookmark>> {
+    let mut sql = String::from(
+        "SELECT id, user_id, quote, source_title, source_url, source_type, source_id, anchor, note, color, created_at \
+        FROM bookmarks WHERE user_id = ?",
+    );
+    if color.is_some() {
+        sql.push_str(" AND color = ?");
+    }
+    if keyword.is_some() {
+        sql.push_str(
+            " AND (quote LIKE CONCAT('%', ?, '%') OR note LIKE CONCAT('%', ?, '%'))",
+        );
+    }
+    sql.push_str(" ORDER BY created_at DESC, id DESC");
+    let mut query = sqlx::query_as::<_, Bookmark>(&sql).bind(user_id);
+    if let Some(c) = color {
+        query = query.bind(c);
+    }
+    if let Some(k) = keyword {
+        query = query.bind(k).bind(k);
+    }
+    let rows = query.fetch_all(pool).await.context("查询书签列表失败")?;
+    Ok(rows)
+}
+
+pub async fn create_bookmark(
+    pool: &MySqlPool,
+    user_id: i32,
+    quote: &str,
+    source_title: &str,
+    source_url: Option<&str>,
+    source_type: &str,
+    source_id: Option<i32>,
+    anchor: Option<&str>,
+    note: Option<&str>,
+    color: &str,
+) -> Result<Bookmark> {
+    let result = sqlx::query(
+        "INSERT INTO bookmarks (user_id, quote, source_title, source_url, source_type, source_id, anchor, note, color) \
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(user_id)
+    .bind(quote)
+    .bind(source_title)
+    .bind(source_url)
+    .bind(source_type)
+    .bind(source_id)
+    .bind(anchor)
+    .bind(note)
+    .bind(color)
+    .execute(pool)
+    .await
+    .context("创建书签失败")?;
+    let id = result.last_insert_id() as i32;
+    let bookmark = find_bookmark_by_id(pool, id)
+        .await?
+        .context("查询新建书签失败")?;
+    Ok(bookmark)
+}
+
+pub async fn update_bookmark(
+    pool: &MySqlPool,
+    id: i32,
+    user_id: i32,
+    quote: &str,
+    source_title: &str,
+    source_url: Option<&str>,
+    source_type: &str,
+    source_id: Option<i32>,
+    anchor: Option<&str>,
+    note: Option<&str>,
+    color: &str,
+) -> Result<Option<Bookmark>> {
+    let result = sqlx::query(
+        "UPDATE bookmarks SET quote = ?, source_title = ?, source_url = ?, source_type = ?, source_id = ?, anchor = ?, note = ?, color = ? \
+        WHERE id = ? AND user_id = ?",
+    )
+    .bind(quote)
+    .bind(source_title)
+    .bind(source_url)
+    .bind(source_type)
+    .bind(source_id)
+    .bind(anchor)
+    .bind(note)
+    .bind(color)
+    .bind(id)
+    .bind(user_id)
+    .execute(pool)
+    .await
+    .context("更新书签失败")?;
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+    find_bookmark_by_id(pool, id).await
+}
+
+pub async fn delete_bookmark(pool: &MySqlPool, id: i32, user_id: i32) -> Result<bool> {
+    let result = sqlx::query("DELETE FROM bookmarks WHERE id = ? AND user_id = ?")
+        .bind(id)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .context("删除书签失败")?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn count_bookmarks_by_user(pool: &MySqlPool, user_id: i32) -> Result<i64> {
+    count_bookmarks(pool, user_id, None, None).await
+}
+
+// ============ 工具模块：资料导出 ============
+
+#[derive(sqlx::FromRow)]
+pub struct ExportRecord {
+    pub id: i32,
+    pub user_id: i32,
+    pub file_ids: Option<String>,
+    pub format: String,
+    pub template: String,
+    pub file_url: String,
+    pub file_size: i64,
+    pub created_at: chrono::NaiveDateTime,
+}
+
+pub async fn create_export_record(
+    pool: &MySqlPool,
+    user_id: i32,
+    file_ids: &str,
+    format: &str,
+    template: &str,
+    file_url: &str,
+    file_size: i64,
+) -> Result<ExportRecord> {
+    let result = sqlx::query(
+        "INSERT INTO export_records (user_id, file_ids, format, template, file_url, file_size) VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(user_id)
+    .bind(file_ids)
+    .bind(format)
+    .bind(template)
+    .bind(file_url)
+    .bind(file_size)
+    .execute(pool)
+    .await
+    .context("创建导出记录失败")?;
+    let id = result.last_insert_id() as i32;
+    let row = sqlx::query_as::<_, ExportRecord>(
+        "SELECT id, user_id, CAST(file_ids AS CHAR) AS file_ids, format, template, file_url, file_size, created_at \
+        FROM export_records WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .context("查询导出记录失败")?;
+    Ok(row)
+}
+
+pub async fn find_export_records(
+    pool: &MySqlPool,
+    user_id: i32,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<ExportRecord>> {
+    let rows = sqlx::query_as::<_, ExportRecord>(
+        "SELECT id, user_id, CAST(file_ids AS CHAR) AS file_ids, format, template, file_url, file_size, created_at \
+        FROM export_records WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+    )
+    .bind(user_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await
+    .context("查询导出记录失败")?;
+    Ok(rows)
+}
+
+pub async fn count_export_records(pool: &MySqlPool, user_id: i32) -> Result<i64> {
+    let row = sqlx::query("SELECT COUNT(*) AS cnt FROM export_records WHERE user_id = ?")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .context("统计导出记录失败")?;
+    let total = row
+        .try_get::<i64, _>("cnt")
+        .ok()
+        .or_else(|| row.try_get::<Option<i64>, _>("cnt").ok().flatten())
+        .unwrap_or(0);
+    Ok(total)
+}
