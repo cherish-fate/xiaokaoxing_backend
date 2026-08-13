@@ -584,3 +584,134 @@ CREATE TABLE IF NOT EXISTS `user_points` (
     `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
     PRIMARY KEY (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户积分表';
+
+CREATE TABLE `daily_questions` (
+                                   `id` int NOT NULL AUTO_INCREMENT COMMENT '题目ID，主键',
+                                   `subject` varchar(50) NOT NULL COMMENT '科目（如：高等数学）',
+                                   `question` text NOT NULL COMMENT '题目内容',
+                                   `options` json NOT NULL COMMENT '选项列表，JSON数组（如：["A选项","B选项","C选项","D选项"]）',
+                                   `answer` varchar(10) NOT NULL COMMENT '正确答案索引（如：B）',
+                                   `explanation` text COMMENT '答案解析',
+                                   `difficulty` tinyint DEFAULT '2' COMMENT '难度等级（1-简单，2-中等，3-困难）',
+                                   `date` date NOT NULL COMMENT '题目日期（每日唯一）',
+                                   `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                                   PRIMARY KEY (`id`),
+                                   UNIQUE KEY `uk_date` (`date`) COMMENT '每日题目唯一',
+                                   KEY `idx_subject` (`subject`) COMMENT '科目索引'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='每日一问题目表';
+
+CREATE TABLE `question_records` (
+                                    `id` int NOT NULL AUTO_INCREMENT COMMENT '答题记录ID，主键',
+                                    `user_id` int NOT NULL COMMENT '用户ID，逻辑关联users表',
+                                    `question_id` int NOT NULL COMMENT '题目ID，逻辑关联daily_questions表',
+                                    `answered_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '答题时间',
+                                    `selected` varchar(10) NOT NULL COMMENT '用户选择的选项（如：B）',
+                                    `is_correct` tinyint(1) NOT NULL DEFAULT '0' COMMENT '是否正确（0-错误，1-正确）',
+                                    PRIMARY KEY (`id`),
+                                    UNIQUE KEY `uk_user_question` (`user_id`, `question_id`) COMMENT '同一用户对同一题目只能答一次',
+                                    KEY `idx_user_id` (`user_id`) COMMENT '用户ID索引',
+                                    KEY `idx_question_id` (`question_id`) COMMENT '题目ID索引'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='答题记录表';
+
+
+CREATE TABLE `notes` (
+                         `id` int NOT NULL AUTO_INCREMENT COMMENT '笔记ID，主键',
+                         `user_id` int NOT NULL COMMENT '用户ID，逻辑关联users表',
+                         `title` varchar(50) NOT NULL COMMENT '笔记标题，最多50字',
+                         `content` text COMMENT 'Markdown正文内容',
+                         `tags` json DEFAULT NULL COMMENT '标签列表，JSON数组（如：["高数","极限"]），最多3个',
+                         `is_pinned` tinyint(1) DEFAULT '0' COMMENT '是否置顶（0-否，1-是）',
+                         `source_type` varchar(20) DEFAULT 'manual' COMMENT '来源类型（manual-手动创建，excerpt-摘录）',
+                         `source_id` int DEFAULT NULL COMMENT '来源ID（资源/帖子/笔记等）',
+                         `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                         `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
+                         PRIMARY KEY (`id`),
+                         KEY `idx_user_id` (`user_id`) COMMENT '用户ID索引',
+                         KEY `idx_is_pinned` (`is_pinned`) COMMENT '置顶状态索引',
+                         KEY `idx_updated_at` (`updated_at`) COMMENT '更新时间索引，用于排序'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='学习笔记表';
+
+CREATE TABLE `semesters` (
+                             `id` int NOT NULL AUTO_INCREMENT COMMENT '学期ID，主键',
+                             `user_id` int NOT NULL COMMENT '用户ID，逻辑关联users表',
+                             `name` varchar(20) NOT NULL COMMENT '学期名称（如：大二上）',
+                             `year` int NOT NULL COMMENT '学年（如：2025）',
+                             `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                             PRIMARY KEY (`id`),
+                             UNIQUE KEY `uk_user_name` (`user_id`, `name`, `year`) COMMENT '同一用户学期唯一',
+                             KEY `idx_user_id` (`user_id`) COMMENT '用户ID索引'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='学期表';
+
+
+CREATE TABLE `course_grades` (
+                                 `id` int NOT NULL AUTO_INCREMENT COMMENT '课程成绩ID，主键',
+                                 `semester_id` int NOT NULL COMMENT '所属学期ID，逻辑关联semesters表',
+                                 `name` varchar(50) NOT NULL COMMENT '课程名称',
+                                 `credit` decimal(3,1) NOT NULL COMMENT '学分（0.5-10，步长0.5）',
+                                 `score` decimal(5,1) DEFAULT NULL COMMENT '百分制成绩（0-100），可为空',
+                                 `grade` varchar(5) DEFAULT NULL COMMENT '等级制成绩（A+/A/A-/B+/B/B-/C+/C/C-/D/F），可为空',
+                                 `type` varchar(10) NOT NULL DEFAULT '必修' COMMENT '课程类型（必修/选修/公共）',
+                                 `gpa` decimal(3,2) DEFAULT NULL COMMENT '绩点（根据算法计算），可为空',
+                                 `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                                 `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
+                                 PRIMARY KEY (`id`),
+                                 KEY `idx_semester_id` (`semester_id`) COMMENT '学期ID索引',
+                                 KEY `idx_type` (`type`) COMMENT '课程类型索引',
+                                 CONSTRAINT `chk_score_or_grade` CHECK ((`score` IS NOT NULL OR `grade` IS NOT NULL))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='课程成绩表';
+
+
+CREATE TABLE `documents` (
+                             `id` int NOT NULL AUTO_INCREMENT COMMENT '文档ID，主键',
+                             `user_id` int NOT NULL COMMENT '用户ID，逻辑关联users表',
+                             `name` varchar(200) NOT NULL COMMENT '文件名',
+                             `file_url` varchar(500) NOT NULL COMMENT '云端文件路径',
+                             `file_size` int NOT NULL DEFAULT '0' COMMENT '文件大小（字节）',
+                             `file_type` varchar(20) NOT NULL COMMENT '文件类型（PDF/Word/PPT/Image/Text）',
+                             `category` varchar(20) DEFAULT NULL COMMENT '分类（真题/笔记/收藏/导出）',
+                             `is_offline` tinyint(1) DEFAULT '0' COMMENT '是否已下载到本地（0-否，1-是）',
+                             `last_opened_at` datetime DEFAULT NULL COMMENT '最后打开时间',
+                             `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                             `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
+                             PRIMARY KEY (`id`),
+                             KEY `idx_user_id` (`user_id`) COMMENT '用户ID索引',
+                             KEY `idx_category` (`category`) COMMENT '分类索引',
+                             KEY `idx_file_type` (`file_type`) COMMENT '文件类型索引'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='个人文档表';
+
+
+CREATE TABLE `bookmarks` (
+                             `id` int NOT NULL AUTO_INCREMENT COMMENT '书签ID，主键',
+                             `user_id` int NOT NULL COMMENT '用户ID，逻辑关联users表',
+                             `quote` varchar(200) NOT NULL COMMENT '引用原文，最多200字',
+                             `source_title` varchar(200) NOT NULL COMMENT '来源标题',
+                             `source_url` varchar(500) DEFAULT NULL COMMENT '来源链接',
+                             `source_type` varchar(20) NOT NULL COMMENT '来源类型（resource/note/question）',
+                             `source_id` int DEFAULT NULL COMMENT '来源ID（对应资源/笔记/问题ID）',
+                             `anchor` varchar(100) DEFAULT NULL COMMENT '滚动锚点（如段落ID）',
+                             `note` varchar(100) DEFAULT NULL COMMENT '用户备注，最多100字',
+                             `color` varchar(10) DEFAULT 'yellow' COMMENT '颜色标签（red/yellow/green/blue/purple）',
+                             `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                             PRIMARY KEY (`id`),
+                             KEY `idx_user_id` (`user_id`) COMMENT '用户ID索引',
+                             KEY `idx_color` (`color`) COMMENT '颜色标签索引',
+                             KEY `idx_source_type` (`source_type`) COMMENT '来源类型索引'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='精选书签表';
+
+
+
+
+
+CREATE TABLE `export_records` (
+                                  `id` int NOT NULL AUTO_INCREMENT COMMENT '导出记录ID，主键',
+                                  `user_id` int NOT NULL COMMENT '用户ID，逻辑关联users表',
+                                  `file_ids` json NOT NULL COMMENT '导出的文档/笔记ID列表（JSON数组）',
+                                  `format` varchar(10) NOT NULL DEFAULT 'pdf' COMMENT '导出格式（pdf/docx/image）',
+                                  `template` varchar(20) NOT NULL DEFAULT 'minimal' COMMENT '样式模板（minimal/academic/handwriting）',
+                                  `file_url` varchar(500) NOT NULL COMMENT '导出文件路径',
+                                  `file_size` int DEFAULT '0' COMMENT '导出文件大小（字节）',
+                                  `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '导出时间',
+                                  PRIMARY KEY (`id`),
+                                  KEY `idx_user_id` (`user_id`) COMMENT '用户ID索引',
+                                  KEY `idx_format` (`format`) COMMENT '格式索引'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='资料导出记录表';
