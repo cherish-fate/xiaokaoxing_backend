@@ -333,7 +333,7 @@ pub async fn update_bookmark(
                 id: bookmark.id,
                 note: bookmark.note.clone(),
                 color: bookmark.color.unwrap_or_else(|| "yellow".to_string()),
-                updated_at: bookmark.created_at.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                updated_at: bookmark.updated_at.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
             },
         ),
         Ok(None) => response::error(StatusCode::NOT_FOUND, 404, "书签不存在"),

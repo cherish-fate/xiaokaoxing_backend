@@ -6,16 +6,23 @@ use axum::{
 
 pub mod ai;
 pub mod auth;
+pub mod bookmarks;
 pub mod checkin;
 pub mod community;
+pub mod daily_question;
+pub mod documents;
 pub mod exams;
+pub mod export_tools;
+pub mod gpa;
 pub mod health;
 pub mod home;
 pub mod majors;
+pub mod notes;
 pub mod prep;
 pub mod resources;
 pub mod tasks;
 pub mod teams;
+pub mod toolbox;
 pub mod users;
 pub mod votes;
 
@@ -78,4 +85,34 @@ pub fn router() -> Router<crate::state::AppState> {
         .route("/api/votes/my-votes", get(votes::get_my_votes))
         .route("/api/votes/my-submissions", get(votes::get_my_submissions))
         .route("/api/votes/{id}/vote", post(votes::cast_vote))
+        // ============ 工具箱模块 ============
+        // 工具箱主页聚合
+        .route("/api/toolbox/home", get(toolbox::get_toolbox_home))
+        // 每日一问
+        .route("/api/daily-question/today", get(daily_question::get_today))
+        .route("/api/daily-question/answer", post(daily_question::submit_answer))
+        .route("/api/daily-question/history", get(daily_question::get_history))
+        // 学习笔记
+        .route("/api/notes", get(notes::list_notes).post(notes::create_note))
+        .route("/api/notes/excerpt", post(notes::create_excerpt))
+        .route("/api/notes/{id}", get(notes::get_note).put(notes::update_note).delete(notes::delete_note))
+        .route("/api/notes/{id}/pin", put(notes::toggle_pin))
+        // 绩点计算器
+        .route("/api/gpa/semesters", get(gpa::list_semesters).post(gpa::create_semester))
+        .route("/api/gpa/semesters/{id}", delete(gpa::delete_semester))
+        .route("/api/gpa/courses", get(gpa::list_courses).post(gpa::save_course))
+        .route("/api/gpa/courses/{id}", delete(gpa::delete_course))
+        .route("/api/gpa/calculate", get(gpa::calculate_gpa))
+        // 个人文档库
+        .route("/api/documents", get(documents::list_documents))
+        .route("/api/documents/storage", get(documents::get_storage))
+        .route("/api/documents/{id}/offline", put(documents::update_offline))
+        .route("/api/documents/{id}", delete(documents::delete_document))
+        // 精选书签
+        .route("/api/bookmarks", get(bookmarks::list_bookmarks).post(bookmarks::create_bookmark))
+        .route("/api/bookmarks/{id}", put(bookmarks::update_bookmark).delete(bookmarks::delete_bookmark))
+        // 资料导出
+        .route("/api/export", post(export_tools::create_export))
+        .route("/api/export/history", get(export_tools::export_history))
+        .route("/api/export/preview", post(export_tools::preview_export))
 }

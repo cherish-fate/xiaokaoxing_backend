@@ -2357,11 +2357,12 @@ pub struct Bookmark {
     pub note: Option<String>,
     pub color: Option<String>,
     pub created_at: chrono::NaiveDateTime,
+    pub updated_at: chrono::NaiveDateTime,
 }
 
 pub async fn find_bookmark_by_id(pool: &MySqlPool, id: i32) -> Result<Option<Bookmark>> {
     let row = sqlx::query_as::<_, Bookmark>(
-        "SELECT id, user_id, quote, source_title, source_url, source_type, source_id, anchor, note, color, created_at \
+        "SELECT id, user_id, quote, source_title, source_url, source_type, source_id, anchor, note, color, created_at, updated_at \
         FROM bookmarks WHERE id = ?",
     )
     .bind(id)
@@ -2409,7 +2410,7 @@ pub async fn find_bookmarks(
     keyword: Option<&str>,
 ) -> Result<Vec<Bookmark>> {
     let mut sql = String::from(
-        "SELECT id, user_id, quote, source_title, source_url, source_type, source_id, anchor, note, color, created_at \
+        "SELECT id, user_id, quote, source_title, source_url, source_type, source_id, anchor, note, color, created_at, updated_at \
         FROM bookmarks WHERE user_id = ?",
     );
     if color.is_some() {

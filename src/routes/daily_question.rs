@@ -123,8 +123,6 @@ pub struct AnswerData {
     pub explanation: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub earned_points: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub wrong_book_added: Option<bool>,
 }
 
 /// POST /api/daily-question/answer
@@ -194,7 +192,6 @@ pub async fn submit_answer(
                 correct_answer: None,
                 explanation: question.explanation.clone(),
                 earned_points: Some(EARNED_POINTS),
-                wrong_book_added: None,
             },
         )
     } else {
@@ -207,7 +204,6 @@ pub async fn submit_answer(
                 correct_answer: Some(question.answer.clone()),
                 explanation: question.explanation.clone(),
                 earned_points: None,
-                wrong_book_added: Some(true),
             },
         )
     }

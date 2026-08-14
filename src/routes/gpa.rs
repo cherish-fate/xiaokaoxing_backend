@@ -545,8 +545,8 @@ pub async fn save_course(
         .await
         {
             Ok(course) => response::ok(
-                StatusCode::OK,
-                200,
+                StatusCode::CREATED,
+                201,
                 "课程保存成功",
                 CourseSavedData {
                     id: course.id,
@@ -764,7 +764,7 @@ pub async fn calculate_gpa(
         200,
         "success",
         CalculateData {
-            algorithm,
+            algorithm: calc_algorithm.to_string(),
             current_gpa,
             total_credits: credits,
             targets: GpaTargets {
