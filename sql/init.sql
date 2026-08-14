@@ -691,8 +691,8 @@ CREATE TABLE `bookmarks` (
                              `anchor` varchar(100) DEFAULT NULL COMMENT '滚动锚点（如段落ID）',
                              `note` varchar(100) DEFAULT NULL COMMENT '用户备注，最多100字',
                              `color` varchar(10) DEFAULT 'yellow' COMMENT '颜色标签（red/yellow/green/blue/purple）',
-                             `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-                             `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
+                             `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                             `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
                              PRIMARY KEY (`id`),
                              KEY `idx_user_id` (`user_id`) COMMENT '用户ID索引',
                              KEY `idx_color` (`color`) COMMENT '颜色标签索引',
@@ -716,3 +716,10 @@ CREATE TABLE `export_records` (
                                   KEY `idx_user_id` (`user_id`) COMMENT '用户ID索引',
                                   KEY `idx_format` (`format`) COMMENT '格式索引'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='资料导出记录表';
+
+ALTER TABLE bookmarks ADD COLUMN updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP AFTER created_at;
+
+UPDATE bookmarks SET updated_at = created_at WHERE updated_at IS NULL;
+ALTER TABLE bookmarks
+    MODIFY created_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    MODIFY updated_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;

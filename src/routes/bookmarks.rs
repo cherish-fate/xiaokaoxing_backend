@@ -89,7 +89,7 @@ pub async fn list_bookmarks(
     let total = match db::count_bookmarks(pool, user_id, color, keyword).await {
         Ok(n) => n,
         Err(e) => {
-            tracing::error!("统计书签数量失败: {}", e);
+            tracing::error!("统计书签数量失败: {:#}", e);
             return response::error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 500,
@@ -100,7 +100,7 @@ pub async fn list_bookmarks(
     let bookmarks = match db::find_bookmarks(pool, user_id, color, keyword).await {
         Ok(rows) => rows,
         Err(e) => {
-            tracing::error!("查询书签列表失败: {}", e);
+            tracing::error!("查询书签列表失败: {:#}", e);
             return response::error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 500,
@@ -158,8 +158,9 @@ pub async fn create_bookmark(
     if source_title.is_empty() {
         return response::error(StatusCode::BAD_REQUEST, 400, "来源标题不能为空");
     }
-    let source_type = payload.source_type.trim();
-    if !matches!(source_type, "resource" | "note" | "question") {
+    let source_type_raw = payload.source_type.trim();
+    let source_type = source_type_raw.to_ascii_lowercase();
+    if !matches!(source_type.as_str(), "resource" | "note" | "question") {
         return response::error(
             StatusCode::BAD_REQUEST,
             400,
@@ -206,7 +207,7 @@ pub async fn create_bookmark(
         quote,
         source_title,
         source_url,
-        source_type,
+        source_type.as_str(),
         payload.source_id,
         anchor,
         note,
@@ -225,7 +226,7 @@ pub async fn create_bookmark(
             },
         ),
         Err(e) => {
-            tracing::error!("创建书签失败: {}", e);
+            tracing::error!("创建书签失败: {:#}", e);
             response::error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 500,
@@ -270,7 +271,7 @@ pub async fn update_bookmark(
             return response::error(StatusCode::NOT_FOUND, 404, "书签不存在");
         }
         Err(e) => {
-            tracing::error!("查询书签失败: {}", e);
+            tracing::error!("查询书签失败: {:#}", e);
             return response::error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 500,
@@ -295,13 +296,21 @@ pub async fn update_bookmark(
         }
         None => existing.note.clone(),
     };
-    let color = payload
-        .color
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(existing.color.as_deref().unwrap_or("yellow"))
-        .to_string();
+    let color = match payload.color.as_deref() {
+        None => existing
+            .color
+            .as_deref()
+            .unwrap_or("yellow")
+            .to_string(),
+        Some(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                "yellow".to_string()
+            } else {
+                trimmed.to_string()
+            }
+        }
+    };
     if !ALLOWED_COLORS.contains(&color.as_str()) {
         return response::error(
             StatusCode::BAD_REQUEST,
@@ -338,7 +347,7 @@ pub async fn update_bookmark(
         ),
         Ok(None) => response::error(StatusCode::NOT_FOUND, 404, "书签不存在"),
         Err(e) => {
-            tracing::error!("更新书签失败: {}", e);
+            tracing::error!("更新书签失败: {:#}", e);
             response::error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 500,
@@ -368,7 +377,7 @@ pub async fn delete_bookmark(
         ),
         Ok(false) => response::error(StatusCode::NOT_FOUND, 404, "书签不存在"),
         Err(e) => {
-            tracing::error!("删除书签失败: {}", e);
+            tracing::error!("删除书签失败: {:#}", e);
             response::error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 500,
