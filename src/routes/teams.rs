@@ -774,3 +774,70 @@ pub async fn dissolve_team(
         }
     }
 }
+
+
+// ============ 我的小队 ============
+
+#[derive(Serialize)]
+pub struct MyTeamListItem {
+    pub id: i32,
+    pub name: String,
+    pub subject: String,
+    pub role: String,
+    pub member_count: i64,
+    pub max_members: i32,
+    pub checkin_rate: f64,
+}
+
+#[derive(Serialize)]
+pub struct MyTeamsData {
+    pub list: Vec<MyTeamListItem>,
+}
+
+/// GET /api/teams/my-teams — 获取当前用户已加入的学习小队
+pub async fn get_my_teams(
+    State(state): State<AppState>,
+    AuthenticatedUser(user_id): AuthenticatedUser,
+    Query(params): Query<TeamListQuery>,
+) -> axum::response::Response {
+    let Some(pool) = state.db.as_ref() else {
+        return response::error(StatusCode::INTERNAL_SERVER_ERROR, 500, "数据库未连接");
+    };
+
+    let subject = params
+        .subject
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+
+    let teams = match db::find_my_teams(pool, user_id, subject).await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!("查询我的小队失败: {}", e);
+            return response::error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                500,
+                "服务器内部错误，请稍后重试",
+            );
+        }
+    };
+
+    let list = teams
+        .into_iter()
+        .map(|t| MyTeamListItem {
+            id: t.id,
+            name: t.name,
+            subject: t.subject,
+            role: if t.creator_id == user_id {
+                "队长".to_string()
+            } else {
+                "成员".to_string()
+            },
+            member_count: t.member_count,
+            max_members: t.max_members,
+            checkin_rate: calc_checkin_rate(t.online_count, t.member_count),
+        })
+        .collect();
+
+    response::ok(StatusCode::OK, 200, "success", MyTeamsData { list })
+}

@@ -23,6 +23,7 @@ pub fn parse_json_array(s: &Option<String>) -> Vec<String> {
 }
 
 /// 当前用户的打卡统计（累计天数、连续天数、本校排名）
+#[derive(Serialize)]
 pub struct UserCheckinStats {
     pub total_days: i64,
     pub continuous_days: i32,
@@ -510,4 +511,38 @@ pub async fn get_ranking(
         "success",
         RankingData { list, my_rank },
     )
+}
+
+
+// ============ 打卡统计 ============
+
+/// GET /api/checkin/stats — 获取当前用户的打卡统计数据
+pub async fn get_stats(
+    State(state): State<AppState>,
+    AuthenticatedUser(user_id): AuthenticatedUser,
+) -> axum::response::Response {
+    let Some(pool) = state.db.as_ref() else {
+        return response::error(StatusCode::INTERNAL_SERVER_ERROR, 500, "数据库未连接");
+    };
+
+    let user = match db::find_user_by_id(pool, user_id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => return response::error(StatusCode::NOT_FOUND, 404, "用户不存在"),
+        Err(e) => {
+            tracing::error!("查询用户失败: {}", e);
+            return response::error(StatusCode::INTERNAL_SERVER_ERROR, 500, "服务器内部错误，请稍后重试");
+        }
+    };
+
+    match compute_user_checkin_stats(pool, user_id, &user.school_name).await {
+        Ok(stats) => response::ok(StatusCode::OK, 200, "success", stats),
+        Err(e) => {
+            tracing::error!("计算打卡统计失败: {}", e);
+            response::error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                500,
+                "服务器内部错误，请稍后重试",
+            )
+        }
+    }
 }

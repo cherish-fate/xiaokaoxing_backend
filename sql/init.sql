@@ -723,3 +723,17 @@ UPDATE bookmarks SET updated_at = created_at WHERE updated_at IS NULL;
 ALTER TABLE bookmarks
     MODIFY created_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
     MODIFY updated_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;
+
+
+-- 用户通知设置表（我的页-设置模块）
+CREATE TABLE `user_settings` (
+    `id` int NOT NULL AUTO_INCREMENT COMMENT '设置ID，主键',
+    `user_id` int NOT NULL COMMENT '用户ID，逻辑关联users表',
+    `exam_reminder` tinyint(1) NOT NULL DEFAULT '1' COMMENT '考试提醒开关（0-关闭，1-开启）',
+    `checkin_reminder` tinyint(1) NOT NULL DEFAULT '1' COMMENT '打卡提醒开关（0-关闭，1-开启）',
+    `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_id` (`user_id`) COMMENT '用户唯一',
+    KEY `idx_user_id` (`user_id`) COMMENT '用户ID索引'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户通知设置表';

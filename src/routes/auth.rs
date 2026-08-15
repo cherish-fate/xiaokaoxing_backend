@@ -1,7 +1,7 @@
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 
-use crate::{auth, db, response, state::AppState, utils::is_valid_email};
+use crate::{auth, auth_ext::AuthenticatedUser, db, response, state::AppState, utils::is_valid_email};
 
 /// 登录请求体
 #[derive(Debug, Deserialize)]
@@ -125,5 +125,16 @@ pub async fn login(
             updated_at,
             token,
         },
+    )
+}
+
+
+/// POST /api/auth/logout — 退出当前账号
+pub async fn logout(AuthenticatedUser(_user_id): AuthenticatedUser) -> axum::response::Response {
+    response::ok(
+        StatusCode::OK,
+        200,
+        "退出登录成功",
+        serde_json::Value::Null,
     )
 }

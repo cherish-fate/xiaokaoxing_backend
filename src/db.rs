@@ -140,6 +140,32 @@ pub async fn find_user_by_id(pool: &MySqlPool, id: i32) -> Result<Option<User>> 
     Ok(user)
 }
 
+pub async fn update_user_profile(
+    pool: &MySqlPool,
+    user_id: i32,
+    nickname: &str,
+    school_name: &str,
+    major_id: i32,
+    avatar_url: Option<&str>,
+) -> Result<Option<User>> {
+    let result = sqlx::query(
+        "UPDATE users SET nickname = ?, school_name = ?, major_id = ?, avatar_url = ?, updated_at = NOW() WHERE id = ?",
+    )
+    .bind(nickname)
+    .bind(school_name)
+    .bind(major_id)
+    .bind(avatar_url)
+    .bind(user_id)
+    .execute(pool)
+    .await
+    .context("更新用户资料失败")?;
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+    find_user_by_id(pool, user_id).await
+}
+
+
 // ============ 考试模型 ============
 
 #[derive(sqlx::FromRow)]
@@ -2092,6 +2118,23 @@ pub async fn find_courses_by_semester(
     Ok(rows)
 }
 
+pub async fn find_courses_by_user(
+    pool: &MySqlPool,
+    user_id: i32,
+) -> Result<Vec<CourseGrade>> {
+    let rows = sqlx::query_as::<_, CourseGrade>(
+        "SELECT c.id, c.semester_id, c.name, CAST(c.credit AS CHAR) AS credit, CAST(c.score AS CHAR) AS score, c.grade, c.type, CAST(c.gpa AS CHAR) AS gpa, c.created_at, c.updated_at \
+        FROM course_grades c JOIN semesters s ON s.id = c.semester_id \
+        WHERE s.user_id = ? ORDER BY c.id ASC",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+    .context("查询用户课程成绩失败")?;
+    Ok(rows)
+}
+
+
 pub async fn find_course_by_id(pool: &MySqlPool, id: i32) -> Result<Option<CourseGrade>> {
     let row = sqlx::query_as::<_, CourseGrade>(
         "SELECT id, semester_id, name, CAST(credit AS CHAR) AS credit, CAST(score AS CHAR) AS score, grade, type, CAST(gpa AS CHAR) AS gpa, created_at, updated_at \
@@ -2188,9 +2231,151 @@ pub async fn count_courses_by_semester(pool: &MySqlPool, semester_id: i32) -> Re
     Ok(total)
 }
 
+// ============ 用户通知设置 ============
+
+#[derive(sqlx::FromRow)]
+pub struct UserSettings {
+    pub id: i32,
+    pub user_id: i32,
+    pub exam_reminder: bool,
+    pub checkin_reminder: bool,
+    pub created_at: chrono::NaiveDateTime,
+    pub updated_at: chrono::NaiveDateTime,
+}
+
+pub async fn get_user_settings(pool: &MySqlPool, user_id: i32) -> Result<UserSettings> {
+    let row = sqlx::query_as::<_, UserSettings>(
+        "SELECT id, user_id, exam_reminder, checkin_reminder, created_at, updated_at FROM user_settings WHERE user_id = ?",
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .context("查询通知设置失败")?;
+    if let Some(settings) = row {
+        return Ok(settings);
+    }
+    sqlx::query("INSERT INTO user_settings (user_id, exam_reminder, checkin_reminder) VALUES (?, 1, 1)")
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .context("初始化通知设置失败")?;
+    let settings = sqlx::query_as::<_, UserSettings>(
+        "SELECT id, user_id, exam_reminder, checkin_reminder, created_at, updated_at FROM user_settings WHERE user_id = ?",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+    .context("查询通知设置失败")?;
+    Ok(settings)
+}
+
+pub async fn update_user_settings(
+    pool: &MySqlPool,
+    user_id: i32,
+    exam_reminder: bool,
+    checkin_reminder: bool,
+) -> Result<UserSettings> {
+    sqlx::query(
+        "INSERT INTO user_settings (user_id, exam_reminder, checkin_reminder) VALUES (?, ?, ?) \
+         ON DUPLICATE KEY UPDATE exam_reminder = VALUES(exam_reminder), checkin_reminder = VALUES(checkin_reminder), updated_at = NOW()",
+    )
+    .bind(user_id)
+    .bind(exam_reminder)
+    .bind(checkin_reminder)
+    .execute(pool)
+    .await
+    .context("更新通知设置失败")?;
+    get_user_settings(pool, user_id).await
+}
+
+pub async fn count_resources_by_user(pool: &MySqlPool, user_id: i32) -> Result<i64> {
+    let row = sqlx::query("SELECT COUNT(*) AS cnt FROM resources WHERE uploader_id = ?")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .context("统计上传资源失败")?;
+    let total = row
+        .try_get::<i64, _>("cnt")
+        .ok()
+        .or_else(|| row.try_get::<Option<i64>, _>("cnt").ok().flatten())
+        .unwrap_or(0);
+    Ok(total)
+}
+
+pub async fn count_vote_records_by_user(pool: &MySqlPool, user_id: i32) -> Result<i64> {
+    let row = sqlx::query("SELECT COUNT(*) AS cnt FROM vote_records WHERE user_id = ?")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .context("统计投票记录失败")?;
+    let total = row
+        .try_get::<i64, _>("cnt")
+        .ok()
+        .or_else(|| row.try_get::<Option<i64>, _>("cnt").ok().flatten())
+        .unwrap_or(0);
+    Ok(total)
+}
+
+pub async fn count_vote_submissions_by_user(pool: &MySqlPool, user_id: i32) -> Result<i64> {
+    let row = sqlx::query("SELECT COUNT(*) AS cnt FROM votes WHERE submitter_id = ?")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .context("统计投稿记录失败")?;
+    let total = row
+        .try_get::<i64, _>("cnt")
+        .ok()
+        .or_else(|| row.try_get::<Option<i64>, _>("cnt").ok().flatten())
+        .unwrap_or(0);
+    Ok(total)
+}
+
+pub async fn count_team_memberships_by_user(pool: &MySqlPool, user_id: i32) -> Result<i64> {
+    let row = sqlx::query("SELECT COUNT(*) AS cnt FROM team_members WHERE user_id = ?")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .context("统计小队数量失败")?;
+    let total = row
+        .try_get::<i64, _>("cnt")
+        .ok()
+        .or_else(|| row.try_get::<Option<i64>, _>("cnt").ok().flatten())
+        .unwrap_or(0);
+    Ok(total)
+}
+
+pub async fn count_question_records_by_user(pool: &MySqlPool, user_id: i32) -> Result<i64> {
+    let row = sqlx::query("SELECT COUNT(*) AS cnt FROM question_records WHERE user_id = ?")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .context("统计每日一题失败")?;
+    let total = row
+        .try_get::<i64, _>("cnt")
+        .ok()
+        .or_else(|| row.try_get::<Option<i64>, _>("cnt").ok().flatten())
+        .unwrap_or(0);
+    Ok(total)
+}
+
+pub async fn count_distinct_exam_names_by_user(pool: &MySqlPool, user_id: i32) -> Result<i64> {
+    let row = sqlx::query("SELECT COUNT(DISTINCT name) AS cnt FROM exams WHERE user_id = ?")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .context("统计备考科目失败")?;
+    let total = row
+        .try_get::<i64, _>("cnt")
+        .ok()
+        .or_else(|| row.try_get::<Option<i64>, _>("cnt").ok().flatten())
+        .unwrap_or(0);
+    Ok(total)
+}
+
 // ============ 工具模块：个人文档库 ============
 
 #[derive(sqlx::FromRow)]
+
 pub struct Document {
     pub id: i32,
     pub user_id: i32,

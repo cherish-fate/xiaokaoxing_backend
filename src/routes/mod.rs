@@ -20,6 +20,7 @@ pub mod majors;
 pub mod notes;
 pub mod prep;
 pub mod resources;
+pub mod settings;
 pub mod tasks;
 pub mod teams;
 pub mod toolbox;
@@ -40,6 +41,14 @@ pub fn router() -> Router<crate::state::AppState> {
         .route("/api/users/login", post(auth::login))
         // 首页聚合接口
         .route("/api/home", get(home::get_home))
+        .route("/api/users/me", get(users::get_me).put(users::update_me))
+        .route("/api/users/me/stats", get(users::get_my_stats))
+        .route("/api/users/me/learning-stats", get(users::get_learning_stats))
+        .route("/api/checkin/stats", get(checkin::get_stats))
+        .route("/api/teams/my-teams", get(teams::get_my_teams))
+        .route("/api/settings/notifications", get(settings::get_notifications).put(settings::update_notifications))
+        .route("/api/settings/about", get(settings::about))
+        .route("/api/auth/logout", post(auth::logout))
         // 考试 CRUD
         .route("/api/exams", get(exams::list_exams))
         .route("/api/exams", post(exams::create_exam))
