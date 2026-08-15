@@ -1,9 +1,11 @@
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{Multipart, Path, Query, State},
     http::StatusCode,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     auth_ext::AuthenticatedUser,
@@ -68,6 +70,216 @@ fn document_to_item(doc: db::Document) -> DocumentItem {
             .last_opened_at
             .map(|t| t.format("%Y-%m-%dT%H:%M:%SZ").to_string()),
     }
+}
+
+const MAX_DOCUMENT_SIZE: usize = 50 * 1024 * 1024;
+
+fn allowed_document_extension(filename: &str) -> Option<String> {
+    let ext = filename.rsplit('.').next()?.to_lowercase();
+    match ext.as_str() {
+        "pdf" | "doc" | "docx" | "ppt" | "pptx" | "txt" | "md" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => Some(ext),
+        _ => None,
+    }
+}
+
+fn document_file_type(ext: &str) -> String {
+    let t = match ext {
+        "pdf" => "PDF",
+        "doc" | "docx" => "Word",
+        "ppt" | "pptx" => "PPT",
+        "txt" | "md" => "Text",
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => "Image",
+        _ => "Other",
+    };
+    t.to_string()
+}
+
+#[derive(Serialize)]
+pub struct UploadDocumentData {
+    pub id: i32,
+    pub user_id: i32,
+    pub name: String,
+    pub file_url: String,
+    pub file_size: i64,
+    pub file_type: String,
+    pub category: Option<String>,
+    pub is_offline: bool,
+    pub last_opened_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+fn document_to_detail(doc: db::Document) -> UploadDocumentData {
+    UploadDocumentData {
+        id: doc.id,
+        user_id: doc.user_id,
+        name: doc.name,
+        file_url: doc.file_url,
+        file_size: doc.file_size,
+        file_type: doc.file_type,
+        category: doc.category,
+        is_offline: doc.is_offline,
+        last_opened_at: doc
+            .last_opened_at
+            .map(|t| t.format("%Y-%m-%dT%H:%M:%SZ").to_string()),
+        created_at: doc
+            .created_at
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string(),
+        updated_at: doc
+            .updated_at
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string(),
+    }
+}
+
+/// POST /api/documents — 上传文档（multipart/form-data）
+pub async fn upload_document(
+    State(state): State<AppState>,
+    AuthenticatedUser(user_id): AuthenticatedUser,
+    mut multipart: Multipart,
+) -> axum::response::Response {
+    let Some(pool) = state.db.as_ref() else {
+        return response::error(StatusCode::INTERNAL_SERVER_ERROR, 500, "数据库未连接");
+    };
+
+    let mut fields: HashMap<String, String> = HashMap::new();
+    let mut file_bytes: Option<Vec<u8>> = None;
+    let mut original_name = String::from("file");
+    let mut file_ext: Option<String> = None;
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+        if name == "file" {
+            original_name = field.file_name().unwrap_or("file").to_string();
+            let ext = match allowed_document_extension(&original_name) {
+                Some(e) => e,
+                None => {
+                    return response::error(
+                        StatusCode::BAD_REQUEST,
+                        400,
+                        "不支持的文件格式，仅支持 PDF/Word/PPT/图片/文本",
+                    );
+                }
+            };
+            let bytes = match field.bytes().await {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::error!("读取文件内容失败: {}", e);
+                    return response::error(StatusCode::BAD_REQUEST, 400, "文件读取失败");
+                }
+            };
+            if bytes.len() > MAX_DOCUMENT_SIZE {
+                return response::error(StatusCode::BAD_REQUEST, 400, "文件大小超过50MB限制");
+            }
+            file_ext = Some(ext);
+            file_bytes = Some(bytes.to_vec());
+        } else {
+            let value = match field.text().await {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!("读取表单字段失败: {}", e);
+                    return response::error(StatusCode::BAD_REQUEST, 400, "表单字段读取失败");
+                }
+            };
+            fields.insert(name, value);
+        }
+    }
+
+    let file_bytes = match file_bytes {
+        Some(b) => b,
+        None => return response::error(StatusCode::BAD_REQUEST, 400, "请上传文件"),
+    };
+    let ext = file_ext.unwrap();
+    let file_type = document_file_type(&ext);
+
+    let name = fields
+        .get("name")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| original_name.clone());
+    if name.chars().count() > 200 {
+        return response::error(StatusCode::BAD_REQUEST, 400, "文档名称不能超过200字符");
+    }
+
+    let category = fields
+        .get("category")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if let Some(c) = category.as_ref() {
+        if c.chars().count() > 20 {
+            return response::error(StatusCode::BAD_REQUEST, 400, "分类不能超过20字符");
+        }
+    }
+
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let stored_name = format!("{}.{}", ts, ext);
+    let dir = std::path::Path::new(&state.config.upload_dir);
+    if let Err(e) = tokio::fs::create_dir_all(dir).await {
+        tracing::error!("创建上传目录失败: {}", e);
+        return response::error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            500,
+            "服务器内部错误，请稍后重试",
+        );
+    }
+    let file_path = dir.join(&stored_name);
+    if let Err(e) = tokio::fs::write(&file_path, &file_bytes).await {
+        tracing::error!("保存文档失败: {}", e);
+        return response::error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            500,
+            "服务器内部错误，请稍后重试",
+        );
+    }
+
+    let relative = format!("uploads/{}", stored_name);
+    let file_url = state.config.public_url(&relative);
+
+    let document_id = match db::create_document(
+        pool,
+        user_id,
+        &name,
+        &file_url,
+        file_bytes.len() as i64,
+        &file_type,
+        category.as_deref(),
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!("创建文档记录失败: {}", e);
+            let _ = tokio::fs::remove_file(&file_path).await;
+            return response::error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                500,
+                "服务器内部错误，请稍后重试",
+            );
+        }
+    };
+
+    let document = match db::find_document_by_id(pool, document_id).await {
+        Ok(Some(doc)) => doc,
+        Ok(None) | Err(_) => {
+            let _ = tokio::fs::remove_file(&file_path).await;
+            return response::error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                500,
+                "服务器内部错误，请稍后重试",
+            );
+        }
+    };
+
+    response::ok(
+        StatusCode::OK,
+        200,
+        "文档上传成功",
+        document_to_detail(document),
+    )
 }
 
 /// GET /api/documents

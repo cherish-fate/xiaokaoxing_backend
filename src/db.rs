@@ -2223,6 +2223,31 @@ pub async fn find_document_by_id(pool: &MySqlPool, id: i32) -> Result<Option<Doc
     Ok(row)
 }
 
+pub async fn create_document(
+    pool: &MySqlPool,
+    user_id: i32,
+    name: &str,
+    file_url: &str,
+    file_size: i64,
+    file_type: &str,
+    category: Option<&str>,
+) -> Result<i32> {
+    let result = sqlx::query(
+        "INSERT INTO documents (user_id, name, file_url, file_size, file_type, category, is_offline) \
+         VALUES (?, ?, ?, ?, ?, ?, 0)",
+    )
+    .bind(user_id)
+    .bind(name)
+    .bind(file_url)
+    .bind(file_size)
+    .bind(file_type)
+    .bind(category)
+    .execute(pool)
+    .await
+    .context("创建文档失败")?;
+    Ok(result.last_insert_id() as i32)
+}
+
 pub async fn count_documents(
     pool: &MySqlPool,
     user_id: i32,
