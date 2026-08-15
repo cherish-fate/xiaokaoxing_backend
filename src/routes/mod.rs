@@ -12,7 +12,6 @@ pub mod community;
 pub mod daily_question;
 pub mod documents;
 pub mod exams;
-pub mod export_tools;
 pub mod gpa;
 pub mod health;
 pub mod home;
@@ -111,8 +110,4 @@ pub fn router() -> Router<crate::state::AppState> {
         // 精选书签
         .route("/api/bookmarks", get(bookmarks::list_bookmarks).post(bookmarks::create_bookmark))
         .route("/api/bookmarks/{id}", put(bookmarks::update_bookmark).delete(bookmarks::delete_bookmark))
-        // 资料导出
-        .route("/api/export", post(export_tools::create_export))
-        .route("/api/export/history", get(export_tools::export_history))
-        .route("/api/export/preview", post(export_tools::preview_export))
 }

@@ -213,7 +213,6 @@ pub async fn get_toolbox_home(
             categories.insert("真题".to_string(), 0);
             categories.insert("笔记".to_string(), 0);
             categories.insert("收藏".to_string(), 0);
-            categories.insert("导出".to_string(), 0);
             match db::find_document_category_counts(pool, user_id).await {
                 Ok(rows) => {
                     for row in rows {

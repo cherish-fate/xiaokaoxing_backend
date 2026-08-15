@@ -701,22 +701,6 @@ CREATE TABLE `bookmarks` (
 
 
 
-
-
-CREATE TABLE `export_records` (
-                                  `id` int NOT NULL AUTO_INCREMENT COMMENT '导出记录ID，主键',
-                                  `user_id` int NOT NULL COMMENT '用户ID，逻辑关联users表',
-                                  `file_ids` json NOT NULL COMMENT '导出的文档/笔记ID列表（JSON数组）',
-                                  `format` varchar(10) NOT NULL DEFAULT 'pdf' COMMENT '导出格式（pdf/docx/image）',
-                                  `template` varchar(20) NOT NULL DEFAULT 'minimal' COMMENT '样式模板（minimal/academic/handwriting）',
-                                  `file_url` varchar(500) NOT NULL COMMENT '导出文件路径',
-                                  `file_size` bigint DEFAULT '0' COMMENT '导出文件大小（字节）',
-                                  `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '导出时间',
-                                  PRIMARY KEY (`id`),
-                                  KEY `idx_user_id` (`user_id`) COMMENT '用户ID索引',
-                                  KEY `idx_format` (`format`) COMMENT '格式索引'
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='资料导出记录表';
-
 ALTER TABLE bookmarks ADD COLUMN updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP AFTER created_at;
 
 UPDATE bookmarks SET updated_at = created_at WHERE updated_at IS NULL;
