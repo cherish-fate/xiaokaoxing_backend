@@ -68,6 +68,13 @@ pub async fn login(
         }
     };
 
+    if user.is_disabled {
+        return response::error(
+            StatusCode::FORBIDDEN,
+            403,
+            "账号已被禁用，请联系管理员",
+        );
+    }
     // ---- 验证密码 ----
     let valid = match auth::verify_password(&password, &user.password_hash) {
         Ok(valid) => valid,

@@ -52,6 +52,8 @@ pub struct User {
     pub school_name: String,
     pub major_id: i32,
     pub avatar_url: Option<String>,
+    pub is_admin: bool,
+    pub is_disabled: bool,
     pub created_at: chrono::NaiveDateTime,
     pub updated_at: chrono::NaiveDateTime,
 }
@@ -82,7 +84,7 @@ pub async fn find_major_by_id(pool: &MySqlPool, id: i32) -> Result<Option<Major>
 /// 根据邮箱查询用户（用于注册时判重、登录时查找）
 pub async fn find_user_by_email(pool: &MySqlPool, email: &str) -> Result<Option<User>> {
     let user = sqlx::query_as::<_, User>(
-        "SELECT id, nickname, email, password_hash, school_name, major_id, avatar_url, created_at, updated_at FROM users WHERE email = ?",
+        "SELECT id, nickname, email, password_hash, school_name, major_id, avatar_url, is_admin, is_disabled, created_at, updated_at FROM users WHERE email = ?",
     )
     .bind(email)
     .fetch_optional(pool)
@@ -116,7 +118,7 @@ pub async fn create_user(
 
     // 查询刚创建的用户（包含 created_at 等默认值）
     let user = sqlx::query_as::<_, User>(
-        "SELECT id, nickname, email, password_hash, school_name, major_id, avatar_url, created_at, updated_at FROM users WHERE id = ?",
+        "SELECT id, nickname, email, password_hash, school_name, major_id, avatar_url, is_admin, is_disabled, created_at, updated_at FROM users WHERE id = ?",
     )
     .bind(user_id)
     .fetch_one(pool)
@@ -131,7 +133,7 @@ pub async fn create_user(
 /// 根据 ID 查询用户
 pub async fn find_user_by_id(pool: &MySqlPool, id: i32) -> Result<Option<User>> {
     let user = sqlx::query_as::<_, User>(
-        "SELECT id, nickname, email, password_hash, school_name, major_id, avatar_url, created_at, updated_at FROM users WHERE id = ?",
+        "SELECT id, nickname, email, password_hash, school_name, major_id, avatar_url, is_admin, is_disabled, created_at, updated_at FROM users WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -2726,4 +2728,458 @@ pub async fn delete_bookmark(pool: &MySqlPool, id: i32, user_id: i32) -> Result<
 
 pub async fn count_bookmarks_by_user(pool: &MySqlPool, user_id: i32) -> Result<i64> {
     count_bookmarks(pool, user_id, None, None).await
+}
+
+// ============ 管理端 ============
+
+#[derive(sqlx::FromRow, serde::Serialize)]
+pub struct AdminUserListItem {
+    pub id: i32,
+    pub nickname: String,
+    pub email: String,
+    pub school_name: String,
+    pub major_id: i32,
+    pub major_name: String,
+    pub avatar_url: Option<String>,
+    pub is_admin: bool,
+    pub is_disabled: bool,
+    pub created_at: chrono::NaiveDateTime,
+}
+
+#[derive(sqlx::FromRow, serde::Serialize)]
+pub struct AdminResourceListItem {
+    pub id: i32,
+    pub title: String,
+    pub category: String,
+    pub subject: Option<String>,
+    pub type_tag: String,
+    pub uploader_name: String,
+    pub status: String,
+    pub reject_reason: Option<String>,
+    pub is_hot: bool,
+    pub file_url: String,
+    pub created_at: chrono::NaiveDateTime,
+}
+
+#[derive(sqlx::FromRow, serde::Serialize)]
+pub struct AdminVoteListItem {
+    pub id: i32,
+    pub subject: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub vote_count: i32,
+    pub status: String,
+    pub reject_reason: Option<String>,
+    pub submitter_name: String,
+    pub created_at: chrono::NaiveDateTime,
+}
+
+#[derive(sqlx::FromRow, serde::Serialize)]
+pub struct AdminTeamListItem {
+    pub id: i32,
+    pub name: String,
+    pub subject: String,
+    pub description: Option<String>,
+    pub creator_name: String,
+    pub member_count: i32,
+    pub max_members: i32,
+    pub created_at: chrono::NaiveDateTime,
+}
+
+#[derive(serde::Serialize)]
+pub struct AdminDashboardStats {
+    pub users_total: i64,
+    pub users_today_new: i64,
+    pub users_disabled: i64,
+    pub resources_total: i64,
+    pub resources_pending: i64,
+    pub votes_total: i64,
+    pub votes_pending: i64,
+    pub teams_total: i64,
+    pub checkins_total: i64,
+    pub documents_total: i64,
+    pub notes_total: i64,
+    pub exams_total: i64,
+}
+
+#[derive(sqlx::FromRow, serde::Serialize)]
+pub struct CheckinTrendItem {
+    pub date: chrono::NaiveDate,
+    pub count: i64,
+}
+
+#[derive(sqlx::FromRow, serde::Serialize)]
+pub struct ResourceCategoryCount {
+    pub category: String,
+    pub count: i64,
+}
+
+async fn count_simple(pool: &MySqlPool, sql: &str) -> Result<i64> {
+    let row = sqlx::query(sql).fetch_one(pool).await?;
+    let total = row
+        .try_get::<i64, _>("cnt")
+        .ok()
+        .or_else(|| row.try_get::<Option<i64>, _>("cnt").ok().flatten())
+        .unwrap_or(0);
+    Ok(total)
+}
+
+pub async fn list_admin_users(
+    pool: &MySqlPool,
+    keyword: Option<&str>,
+    page: i64,
+    page_size: i64,
+) -> Result<(Vec<AdminUserListItem>, i64)> {
+    let pattern = keyword.map(|k| format!("%{}%", k));
+    let row = sqlx::query(
+        "SELECT COUNT(*) AS cnt FROM users u \
+         WHERE (? IS NULL OR u.nickname LIKE ? OR u.email LIKE ? OR u.school_name LIKE ?)",
+    )
+    .bind(&pattern)
+    .bind(&pattern)
+    .bind(&pattern)
+    .bind(&pattern)
+    .fetch_one(pool)
+    .await
+    .context("统计用户数量失败")?;
+    let total = row
+        .try_get::<i64, _>("cnt")
+        .ok()
+        .or_else(|| row.try_get::<Option<i64>, _>("cnt").ok().flatten())
+        .unwrap_or(0);
+    let rows = sqlx::query_as::<_, AdminUserListItem>(
+        "SELECT u.id, u.nickname, u.email, u.school_name, u.major_id, COALESCE(m.name, '') AS major_name, u.avatar_url, u.is_admin, u.is_disabled, u.created_at \
+         FROM users u LEFT JOIN majors m ON m.id = u.major_id \
+         WHERE (? IS NULL OR u.nickname LIKE ? OR u.email LIKE ? OR u.school_name LIKE ?) \
+         ORDER BY u.id DESC LIMIT ? OFFSET ?",
+    )
+    .bind(&pattern)
+    .bind(&pattern)
+    .bind(&pattern)
+    .bind(&pattern)
+    .bind(page_size)
+    .bind((page - 1) * page_size)
+    .fetch_all(pool)
+    .await
+    .context("查询用户列表失败")?;
+    Ok((rows, total))
+}
+
+pub async fn update_user_disabled(pool: &MySqlPool, user_id: i32, is_disabled: bool) -> Result<bool> {
+    let result = sqlx::query("UPDATE users SET is_disabled = ?, updated_at = NOW() WHERE id = ?")
+        .bind(is_disabled)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .context("更新用户禁用状态失败")?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn update_user_admin(pool: &MySqlPool, user_id: i32, is_admin: bool) -> Result<bool> {
+    let result = sqlx::query("UPDATE users SET is_admin = ?, updated_at = NOW() WHERE id = ?")
+        .bind(is_admin)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .context("更新管理员状态失败")?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn reset_user_password(
+    pool: &MySqlPool,
+    user_id: i32,
+    password_hash: &str,
+) -> Result<bool> {
+    let result = sqlx::query("UPDATE users SET password_hash = ?, updated_at = NOW() WHERE id = ?")
+        .bind(password_hash)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .context("重置用户密码失败")?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn list_admin_resources(
+    pool: &MySqlPool,
+    status: Option<&str>,
+    keyword: Option<&str>,
+    page: i64,
+    page_size: i64,
+) -> Result<(Vec<AdminResourceListItem>, i64)> {
+    let pattern = keyword.map(|k| format!("%{}%", k));
+    let row = sqlx::query(
+        "SELECT COUNT(*) AS cnt FROM resources r \
+         WHERE (? IS NULL OR r.status = ?) \
+         AND (? IS NULL OR r.title LIKE ? OR r.category LIKE ? OR r.subject LIKE ?)",
+    )
+    .bind(status)
+    .bind(status)
+    .bind(&pattern)
+    .bind(&pattern)
+    .bind(&pattern)
+    .fetch_one(pool)
+    .await
+    .context("统计资源数量失败")?;
+    let total = row
+        .try_get::<i64, _>("cnt")
+        .ok()
+        .or_else(|| row.try_get::<Option<i64>, _>("cnt").ok().flatten())
+        .unwrap_or(0);
+    let rows = sqlx::query_as::<_, AdminResourceListItem>(
+        "SELECT r.id, r.title, r.category, r.subject, r.type_tag, COALESCE(u.nickname, '未知用户') AS uploader_name, r.status, r.reject_reason, r.is_hot, r.file_url, r.created_at \
+         FROM resources r LEFT JOIN users u ON u.id = r.uploader_id \
+         WHERE (? IS NULL OR r.status = ?) \
+         AND (? IS NULL OR r.title LIKE ? OR r.category LIKE ? OR r.subject LIKE ?) \
+         ORDER BY r.created_at DESC LIMIT ? OFFSET ?",
+    )
+    .bind(status)
+    .bind(status)
+    .bind(&pattern)
+    .bind(&pattern)
+    .bind(&pattern)
+    .bind(page_size)
+    .bind((page - 1) * page_size)
+    .fetch_all(pool)
+    .await
+    .context("查询资源列表失败")?;
+    Ok((rows, total))
+}
+
+pub async fn review_resource(
+    pool: &MySqlPool,
+    resource_id: i32,
+    status: &str,
+    reject_reason: Option<&str>,
+) -> Result<bool> {
+    let result = sqlx::query(
+        "UPDATE resources SET status = ?, reject_reason = ?, updated_at = NOW() WHERE id = ?",
+    )
+    .bind(status)
+    .bind(reject_reason)
+    .bind(resource_id)
+    .execute(pool)
+    .await
+    .context("审核资源失败")?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn toggle_resource_hot(pool: &MySqlPool, resource_id: i32, is_hot: bool) -> Result<bool> {
+    let result = sqlx::query("UPDATE resources SET is_hot = ?, updated_at = NOW() WHERE id = ?")
+        .bind(is_hot)
+        .bind(resource_id)
+        .execute(pool)
+        .await
+        .context("更新资源热门状态失败")?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn delete_resource(pool: &MySqlPool, resource_id: i32) -> Result<bool> {
+    let mut tx = pool.begin().await.context("开始事务失败")?;
+    sqlx::query("DELETE FROM favorites WHERE resource_id = ?")
+        .bind(resource_id)
+        .execute(&mut *tx)
+        .await
+        .context("删除资源收藏失败")?;
+    let result = sqlx::query("DELETE FROM resources WHERE id = ?")
+        .bind(resource_id)
+        .execute(&mut *tx)
+        .await
+        .context("删除资源失败")?;
+    tx.commit().await.context("提交事务失败")?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn list_admin_votes(
+    pool: &MySqlPool,
+    status: Option<&str>,
+    keyword: Option<&str>,
+    page: i64,
+    page_size: i64,
+) -> Result<(Vec<AdminVoteListItem>, i64)> {
+    let pattern = keyword.map(|k| format!("%{}%", k));
+    let row = sqlx::query(
+        "SELECT COUNT(*) AS cnt FROM votes v \
+         WHERE (? IS NULL OR v.status = ?) \
+         AND (? IS NULL OR v.title LIKE ? OR v.subject LIKE ?)",
+    )
+    .bind(status)
+    .bind(status)
+    .bind(&pattern)
+    .bind(&pattern)
+    .fetch_one(pool)
+    .await
+    .context("统计考点数量失败")?;
+    let total = row
+        .try_get::<i64, _>("cnt")
+        .ok()
+        .or_else(|| row.try_get::<Option<i64>, _>("cnt").ok().flatten())
+        .unwrap_or(0);
+    let rows = sqlx::query_as::<_, AdminVoteListItem>(
+        "SELECT v.id, v.subject, v.title, v.description, v.vote_count, v.status, v.reject_reason, COALESCE(u.nickname, '未知用户') AS submitter_name, v.created_at \
+         FROM votes v LEFT JOIN users u ON u.id = v.submitter_id \
+         WHERE (? IS NULL OR v.status = ?) \
+         AND (? IS NULL OR v.title LIKE ? OR v.subject LIKE ?) \
+         ORDER BY v.created_at DESC LIMIT ? OFFSET ?",
+    )
+    .bind(status)
+    .bind(status)
+    .bind(&pattern)
+    .bind(&pattern)
+    .bind(page_size)
+    .bind((page - 1) * page_size)
+    .fetch_all(pool)
+    .await
+    .context("查询考点列表失败")?;
+    Ok((rows, total))
+}
+
+pub async fn review_vote(
+    pool: &MySqlPool,
+    vote_id: i32,
+    status: &str,
+    reject_reason: Option<&str>,
+) -> Result<bool> {
+    let result = sqlx::query(
+        "UPDATE votes SET status = ?, reject_reason = ?, updated_at = NOW() WHERE id = ?",
+    )
+    .bind(status)
+    .bind(reject_reason)
+    .bind(vote_id)
+    .execute(pool)
+    .await
+    .context("审核考点失败")?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn delete_vote(pool: &MySqlPool, vote_id: i32) -> Result<bool> {
+    let mut tx = pool.begin().await.context("开始事务失败")?;
+    sqlx::query("DELETE FROM vote_records WHERE vote_id = ?")
+        .bind(vote_id)
+        .execute(&mut *tx)
+        .await
+        .context("删除考点投票记录失败")?;
+    let result = sqlx::query("DELETE FROM votes WHERE id = ?")
+        .bind(vote_id)
+        .execute(&mut *tx)
+        .await
+        .context("删除考点失败")?;
+    tx.commit().await.context("提交事务失败")?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn list_admin_teams(
+    pool: &MySqlPool,
+    keyword: Option<&str>,
+    page: i64,
+    page_size: i64,
+) -> Result<(Vec<AdminTeamListItem>, i64)> {
+    let pattern = keyword.map(|k| format!("%{}%", k));
+    let row = sqlx::query(
+        "SELECT COUNT(*) AS cnt FROM teams t \
+         WHERE (? IS NULL OR t.name LIKE ? OR t.subject LIKE ?)",
+    )
+    .bind(&pattern)
+    .bind(&pattern)
+    .bind(&pattern)
+    .fetch_one(pool)
+    .await
+    .context("统计小队数量失败")?;
+    let total = row
+        .try_get::<i64, _>("cnt")
+        .ok()
+        .or_else(|| row.try_get::<Option<i64>, _>("cnt").ok().flatten())
+        .unwrap_or(0);
+    let rows = sqlx::query_as::<_, AdminTeamListItem>(
+        "SELECT t.id, t.name, t.subject, t.description, COALESCE(u.nickname, '未知用户') AS creator_name, t.member_count, t.max_members, t.created_at \
+         FROM teams t LEFT JOIN users u ON u.id = t.creator_id \
+         WHERE (? IS NULL OR t.name LIKE ? OR t.subject LIKE ?) \
+         ORDER BY t.created_at DESC LIMIT ? OFFSET ?",
+    )
+    .bind(&pattern)
+    .bind(&pattern)
+    .bind(&pattern)
+    .bind(page_size)
+    .bind((page - 1) * page_size)
+    .fetch_all(pool)
+    .await
+    .context("查询小队列表失败")?;
+    Ok((rows, total))
+}
+
+pub async fn delete_team(pool: &MySqlPool, team_id: i32) -> Result<bool> {
+    let mut tx = pool.begin().await.context("开始事务失败")?;
+    sqlx::query("DELETE FROM team_join_requests WHERE team_id = ?")
+        .bind(team_id)
+        .execute(&mut *tx)
+        .await
+        .context("删除小队申请失败")?;
+    sqlx::query("DELETE FROM team_members WHERE team_id = ?")
+        .bind(team_id)
+        .execute(&mut *tx)
+        .await
+        .context("删除小队成员失败")?;
+    let result = sqlx::query("DELETE FROM teams WHERE id = ?")
+        .bind(team_id)
+        .execute(&mut *tx)
+        .await
+        .context("删除小队失败")?;
+    tx.commit().await.context("提交事务失败")?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn admin_dashboard_stats(pool: &MySqlPool) -> Result<AdminDashboardStats> {
+    Ok(AdminDashboardStats {
+        users_total: count_simple(pool, "SELECT COUNT(*) AS cnt FROM users").await?,
+        users_today_new: count_simple(
+            pool,
+            "SELECT COUNT(*) AS cnt FROM users WHERE created_at >= CURDATE()",
+        )
+        .await?,
+        users_disabled: count_simple(
+            pool,
+            "SELECT COUNT(*) AS cnt FROM users WHERE is_disabled = 1",
+        )
+        .await?,
+        resources_total: count_simple(pool, "SELECT COUNT(*) AS cnt FROM resources").await?,
+        resources_pending: count_simple(
+            pool,
+            "SELECT COUNT(*) AS cnt FROM resources WHERE status = '审核中'",
+        )
+        .await?,
+        votes_total: count_simple(pool, "SELECT COUNT(*) AS cnt FROM votes").await?,
+        votes_pending: count_simple(
+            pool,
+            "SELECT COUNT(*) AS cnt FROM votes WHERE status = '待审核'",
+        )
+        .await?,
+        teams_total: count_simple(pool, "SELECT COUNT(*) AS cnt FROM teams").await?,
+        checkins_total: count_simple(pool, "SELECT COUNT(*) AS cnt FROM checkin_records").await?,
+        documents_total: count_simple(pool, "SELECT COUNT(*) AS cnt FROM documents").await?,
+        notes_total: count_simple(pool, "SELECT COUNT(*) AS cnt FROM notes").await?,
+        exams_total: count_simple(pool, "SELECT COUNT(*) AS cnt FROM exams").await?,
+    })
+}
+
+pub async fn checkin_trend(pool: &MySqlPool, days: i64) -> Result<Vec<CheckinTrendItem>> {
+    let since = chrono::Local::now().naive_local().date() - chrono::Duration::days(days - 1);
+    let rows = sqlx::query_as::<_, CheckinTrendItem>(
+        "SELECT checkin_date AS date, COUNT(*) AS count FROM checkin_records \
+         WHERE checkin_date >= ? \
+         GROUP BY checkin_date ORDER BY checkin_date ASC",
+    )
+    .bind(since)
+    .fetch_all(pool)
+    .await
+    .context("查询打卡趋势失败")?;
+    Ok(rows)
+}
+
+pub async fn resource_categories(pool: &MySqlPool) -> Result<Vec<ResourceCategoryCount>> {
+    let rows = sqlx::query_as::<_, ResourceCategoryCount>(
+        "SELECT category, COUNT(*) AS count FROM resources GROUP BY category ORDER BY count DESC",
+    )
+    .fetch_all(pool)
+    .await
+    .context("查询资源分类统计失败")?;
+    Ok(rows)
 }

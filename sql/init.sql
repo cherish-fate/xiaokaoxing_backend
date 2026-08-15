@@ -20,6 +20,8 @@ CREATE TABLE `users` (
                          `school_name` varchar(100) NOT NULL COMMENT '用户所在学校名称（直接存储文本）',
                          `major_id` int NOT NULL COMMENT '用户所学专业ID（外键关联 majors.id）',
                          `avatar_url` varchar(500) DEFAULT NULL COMMENT '头像图片URL（可选）',
+                         `is_admin` tinyint(1) NOT NULL DEFAULT '0' COMMENT '是否管理员（0-否，1-是）',
+                         `is_disabled` tinyint(1) NOT NULL DEFAULT '0' COMMENT '是否禁用（0-否，1-是）',
                          `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '注册时间',
                          `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '信息最后更新时间',
                          PRIMARY KEY (`id`),
@@ -487,6 +489,7 @@ CREATE TABLE `votes` (
                          `vote_count` int DEFAULT '0' COMMENT '总票数（冗余字段）',
                          `confidence` decimal(5,2) DEFAULT '0.00' COMMENT '置信度（百分比，冗余字段）',
                          `status` varchar(10) NOT NULL DEFAULT '待审核' COMMENT '审核状态（待审核/已通过/已拒绝）',
+                         `reject_reason` varchar(500) DEFAULT NULL COMMENT '审核拒绝原因',
                          `submitter_id` int NOT NULL COMMENT '提交者用户ID，逻辑关联users表',
                          `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
                          `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
@@ -721,3 +724,7 @@ CREATE TABLE `user_settings` (
     UNIQUE KEY `uk_user_id` (`user_id`) COMMENT '用户唯一',
     KEY `idx_user_id` (`user_id`) COMMENT '用户ID索引'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户通知设置表';
+
+-- 默认管理员账号（邮箱 admin@xiaokaoxing.com，初始密码 admin123）
+INSERT INTO users (nickname, email, password_hash, school_name, major_id, avatar_url, is_admin, is_disabled)
+VALUES ('系统管理员', 'admin@xiaokaoxing.com', '$argon2id$v=19$m=19456,t=2,p=1$OdIhZFSgfi2tQ+SypC8WNg$SEAlwytIkkq3I7HQhWbHYRT7rroqeZzzF8bUM8oIN3U', '校考星', 1, NULL, 1, 0);

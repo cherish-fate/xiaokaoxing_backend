@@ -4,6 +4,7 @@ use axum::{
     routing::{get, post, put, delete},
 };
 
+pub mod admin;
 pub mod ai;
 pub mod auth;
 pub mod bookmarks;
@@ -48,6 +49,23 @@ pub fn router() -> Router<crate::state::AppState> {
         .route("/api/settings/notifications", get(settings::get_notifications).put(settings::update_notifications))
         .route("/api/settings/about", get(settings::about))
         .route("/api/auth/logout", post(auth::logout))
+        // ============ 管理端 ============
+        .route("/api/admin/login", post(admin::login))
+        .route("/api/admin/me", get(admin::get_me))
+        .route("/api/admin/stats/dashboard", get(admin::dashboard))
+        .route("/api/admin/users", get(admin::list_users))
+        .route("/api/admin/users/{id}/status", put(admin::update_user_status))
+        .route("/api/admin/users/{id}/admin", put(admin::update_user_admin))
+        .route("/api/admin/users/{id}/password", put(admin::reset_user_password))
+        .route("/api/admin/resources", get(admin::list_resources))
+        .route("/api/admin/resources/{id}/review", put(admin::review_resource))
+        .route("/api/admin/resources/{id}/hot", put(admin::toggle_resource_hot))
+        .route("/api/admin/resources/{id}", delete(admin::delete_resource))
+        .route("/api/admin/votes", get(admin::list_votes))
+        .route("/api/admin/votes/{id}/review", put(admin::review_vote))
+        .route("/api/admin/votes/{id}", delete(admin::delete_vote))
+        .route("/api/admin/teams", get(admin::list_teams))
+        .route("/api/admin/teams/{id}", delete(admin::delete_team))
         // 考试 CRUD
         .route("/api/exams", get(exams::list_exams))
         .route("/api/exams", post(exams::create_exam))
