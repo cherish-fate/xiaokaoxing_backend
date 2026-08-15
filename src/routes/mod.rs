@@ -27,6 +27,7 @@ pub mod votes;
 
 pub fn router() -> Router<crate::state::AppState> {
     Router::new()
+        .route("/api", get(health::api_index))
         // 健康检查
         .route("/", get(health::index))
         .route("/health", get(health::health))
@@ -103,7 +104,7 @@ pub fn router() -> Router<crate::state::AppState> {
         .route("/api/gpa/courses/{id}", delete(gpa::delete_course))
         .route("/api/gpa/calculate", get(gpa::calculate_gpa))
         // 个人文档库
-        .route("/api/documents", get(documents::list_documents))
+        .route("/api/documents", get(documents::list_documents).post(documents::upload_document).layer(DefaultBodyLimit::max(50 * 1024 * 1024)))
         .route("/api/documents/storage", get(documents::get_storage))
         .route("/api/documents/{id}/offline", put(documents::update_offline))
         .route("/api/documents/{id}", delete(documents::delete_document))
