@@ -2917,6 +2917,7 @@ pub async fn list_admin_resources(
     .bind(&pattern)
     .bind(&pattern)
     .bind(&pattern)
+    .bind(&pattern)
     .fetch_one(pool)
     .await
     .context("统计资源数量失败")?;
@@ -2934,6 +2935,7 @@ pub async fn list_admin_resources(
     )
     .bind(status)
     .bind(status)
+    .bind(&pattern)
     .bind(&pattern)
     .bind(&pattern)
     .bind(&pattern)
@@ -3006,6 +3008,7 @@ pub async fn list_admin_votes(
     .bind(status)
     .bind(&pattern)
     .bind(&pattern)
+    .bind(&pattern)
     .fetch_one(pool)
     .await
     .context("统计考点数量失败")?;
@@ -3023,6 +3026,7 @@ pub async fn list_admin_votes(
     )
     .bind(status)
     .bind(status)
+    .bind(&pattern)
     .bind(&pattern)
     .bind(&pattern)
     .bind(page_size)
