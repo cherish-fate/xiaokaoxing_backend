@@ -711,6 +711,9 @@ ALTER TABLE bookmarks
     MODIFY created_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
     MODIFY updated_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;
 
+DROP TABLE IF EXISTS export_records;
+
+
 
 -- 用户通知设置表（我的页-设置模块）
 CREATE TABLE `user_settings` (

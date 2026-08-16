@@ -1,4 +1,4 @@
-﻿use axum::{Json, extract::State, http::StatusCode};
+use axum::{Json, extract::State, http::StatusCode};
 
 use serde::{Deserialize, Serialize};
 
@@ -212,6 +212,7 @@ pub struct UpdateMeRequest {
     pub school_name: Option<String>,
     pub major_id: Option<i32>,
     pub avatar_url: Option<String>,
+    pub password: Option<String>,
 }
 
 /// PUT /api/users/me — 更新当前用户个人信息
@@ -241,7 +242,7 @@ pub async fn update_me(
         .unwrap_or(&user.nickname)
         .to_string();
     if nickname.chars().count() > 50 {
-        return response::error(StatusCode::BAD_REQUEST, 400, "昵称最天50字符");
+        return response::error(StatusCode::BAD_REQUEST, 400, "昵称最大50字符");
     }
 
     let school_name = payload
@@ -252,7 +253,7 @@ pub async fn update_me(
         .unwrap_or(&user.school_name)
         .to_string();
     if school_name.chars().count() > 100 {
-        return response::error(StatusCode::BAD_REQUEST, 400, "学校名称最天100字符");
+        return response::error(StatusCode::BAD_REQUEST, 400, "学校名称最大100字符");
     }
 
     let major_id = payload.major_id.unwrap_or(user.major_id);
@@ -273,6 +274,26 @@ pub async fn update_me(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
+
+    // 修改密码（可选）
+    if let Some(password) = &payload.password {
+        if !password.is_empty() {
+            if password.len() < 6 {
+                return response::error(StatusCode::BAD_REQUEST, 400, "密码至少6位");
+            }
+            let hash = match auth::hash_password(password) {
+                Ok(hash) => hash,
+                Err(e) => {
+                    tracing::error!("密码加密失败: {}", e);
+                    return response::error(StatusCode::INTERNAL_SERVER_ERROR, 500, "服务器内部错误，请稍后重试");
+                }
+            };
+            if let Err(e) = db::reset_user_password(pool, user_id, &hash).await {
+                tracing::error!("更新密码失败: {}", e);
+                return response::error(StatusCode::INTERNAL_SERVER_ERROR, 500, "服务器内部错误，请稍后重试");
+            }
+        }
+    }
 
     let updated = match db::update_user_profile(
         pool,
