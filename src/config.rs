@@ -13,6 +13,12 @@ pub struct AppConfig {
     pub upload_dir: String,
     /// 访问上传文件的公开基础 URL（如 https://example.com），不配置则用 http://{host}:{port}
     pub public_base_url: Option<String>,
+    /// 阿里云百炼（千问）API Key，未配置则 AI 对话不可用
+    pub ai_api_key: Option<String>,
+    /// 千问兼容模式 API 基础地址
+    pub ai_base_url: String,
+    /// 使用的模型名称
+    pub ai_model: String,
 }
 
 impl AppConfig {
@@ -37,6 +43,12 @@ impl AppConfig {
             .ok()
             .filter(|v| !v.is_empty());
 
+        let ai_api_key = env::var("AI_API_KEY").ok().filter(|v| !v.is_empty());
+        let ai_base_url = env::var("AI_BASE_URL").unwrap_or_else(|_| {
+            "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()
+        });
+        let ai_model = env::var("AI_MODEL").unwrap_or_else(|_| "qwen-plus".to_string());
+
         Ok(Self {
             host,
             port,
@@ -45,6 +57,9 @@ impl AppConfig {
             jwt_expires_seconds,
             upload_dir,
             public_base_url,
+            ai_api_key,
+            ai_base_url,
+            ai_model,
         })
     }
 
