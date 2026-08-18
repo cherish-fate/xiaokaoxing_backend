@@ -863,6 +863,34 @@ pub async fn find_checkin_dates_by_user_month(
     Ok(dates)
 }
 
+/// 查询用户指定日期范围内的打卡日期（含起止日）
+pub async fn find_checkin_dates_between(
+    pool: &MySqlPool,
+    user_id: i32,
+    start: chrono::NaiveDate,
+    end: chrono::NaiveDate,
+) -> Result<Vec<chrono::NaiveDate>> {
+    let rows = sqlx::query(
+        "SELECT checkin_date FROM checkin_records \
+        WHERE user_id = ? AND checkin_date >= ? AND checkin_date <= ? \
+        ORDER BY checkin_date ASC",
+    )
+    .bind(user_id)
+    .bind(start)
+    .bind(end)
+    .fetch_all(pool)
+    .await
+    .context("查询区间打卡日期失败")?;
+    let mut dates = Vec::new();
+    for row in rows {
+        let d: chrono::NaiveDate = row
+            .try_get("checkin_date")
+            .context("解析区间打卡日期失败")?;
+        dates.push(d);
+    }
+    Ok(dates)
+}
+
 /// 统计用户累计打卡天数
 pub async fn count_checkins_by_user(pool: &MySqlPool, user_id: i32) -> Result<i64> {
     let row = sqlx::query("SELECT COUNT(*) AS cnt FROM checkin_records WHERE user_id = ?")
@@ -1813,6 +1841,30 @@ pub async fn find_question_dates_by_month(
     .fetch_all(pool)
     .await
     .context("查询答题日期失败")?;
+    let mut dates = Vec::new();
+    for row in rows {
+        let d: chrono::NaiveDate = row.try_get("d").context("解析答题日期失败")?;
+        dates.push(d);
+    }
+    Ok(dates)
+}
+
+/// 查询用户自指定日期起的所有答题日期（倒序）
+pub async fn find_question_answer_dates(
+    pool: &MySqlPool,
+    user_id: i32,
+    since: chrono::NaiveDate,
+) -> Result<Vec<chrono::NaiveDate>> {
+    let rows = sqlx::query(
+        "SELECT DISTINCT DATE(answered_at) AS d FROM question_records \
+        WHERE user_id = ? AND DATE(answered_at) >= ? \
+        ORDER BY d DESC",
+    )
+    .bind(user_id)
+    .bind(since)
+    .fetch_all(pool)
+    .await
+    .context("查询连续答题日期失败")?;
     let mut dates = Vec::new();
     for row in rows {
         let d: chrono::NaiveDate = row.try_get("d").context("解析答题日期失败")?;
@@ -2816,6 +2868,20 @@ pub struct ResourceCategoryCount {
 
 async fn count_simple(pool: &MySqlPool, sql: &str) -> Result<i64> {
     let row = sqlx::query(sql).fetch_one(pool).await?;
+    let total = row
+        .try_get::<i64, _>("cnt")
+        .ok()
+        .or_else(|| row.try_get::<Option<i64>, _>("cnt").ok().flatten())
+        .unwrap_or(0);
+    Ok(total)
+}
+
+/// 统计平台用户总数
+pub async fn count_total_users(pool: &MySqlPool) -> Result<i64> {
+    let row = sqlx::query("SELECT COUNT(*) AS cnt FROM users")
+        .fetch_one(pool)
+        .await
+        .context("统计用户总数失败")?;
     let total = row
         .try_get::<i64, _>("cnt")
         .ok()

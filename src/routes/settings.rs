@@ -105,6 +105,8 @@ pub struct AboutData {
     pub version: String,
     pub app_name: String,
     pub description: String,
+    pub privacy_url: String,
+    pub terms_url: String,
 }
 
 /// GET /api/settings/about — 获取关于信息
@@ -117,6 +119,8 @@ pub async fn about() -> axum::response::Response {
             version: "v1.0.0".to_string(),
             app_name: "校考星".to_string(),
             description: "大学生期末备考一站式平台".to_string(),
+            privacy_url: "https://example.com/privacy".to_string(),
+            terms_url: "https://example.com/terms".to_string(),
         },
     )
 }

@@ -1,4 +1,5 @@
 use axum::{extract::State, http::StatusCode};
+use chrono::Datelike;
 use serde::Serialize;
 
 use crate::{
@@ -51,6 +52,8 @@ pub struct LatestResourceItem {
 
 #[derive(Serialize)]
 pub struct CommunityHomeData {
+    pub total_users: i64,
+    pub checked_week_days: Vec<u32>,
     pub checkin_stats: CheckinStats,
     pub hot_votes: Vec<HotVoteItem>,
     pub hot_teams: Vec<HotTeamItem>,
@@ -113,6 +116,45 @@ pub async fn get_home(
             );
         }
     };
+
+    // 0. 平台用户总数
+    let total_users = match db::count_total_users(pool).await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::error!("统计用户总数失败: {}", e);
+            return response::error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                500,
+                "服务器内部错误，请稍后重试",
+            );
+        }
+    };
+
+    // 0. 本周已打卡日期索引（0=周一 ... 6=周日）
+    let today = chrono::Local::now().naive_local().date();
+    let monday = today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64);
+    let week_dates = match db::find_checkin_dates_between(
+        pool,
+        user_id,
+        monday,
+        monday + chrono::Duration::days(6),
+    )
+    .await
+    {
+        Ok(dates) => dates,
+        Err(e) => {
+            tracing::error!("查询本周打卡日期失败: {}", e);
+            return response::error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                500,
+                "服务器内部错误，请稍后重试",
+            );
+        }
+    };
+    let checked_week_days: Vec<u32> = week_dates
+        .iter()
+        .map(|d| d.weekday().num_days_from_monday())
+        .collect();
 
     // 1. 打卡统计
     let checkin_stats = match compute_user_checkin_stats(pool, user_id, &user.school_name).await {
@@ -226,6 +268,8 @@ pub async fn get_home(
         200,
         "success",
         CommunityHomeData {
+            total_users,
+            checked_week_days,
             checkin_stats,
             hot_votes,
             hot_teams,

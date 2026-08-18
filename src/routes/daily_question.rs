@@ -29,6 +29,34 @@ fn days_in_month(year: i32, month: u32) -> Option<u32> {
     Some((next - first).num_days() as u32)
 }
 
+fn compute_answer_streak(dates: &[NaiveDate], today: NaiveDate) -> i32 {
+    let yesterday = today - chrono::Duration::days(1);
+    let anchor = if dates.contains(&today) {
+        today
+    } else if dates.contains(&yesterday) {
+        yesterday
+    } else {
+        return 0;
+    };
+    let mut streak = 0;
+    loop {
+        let day = anchor - chrono::Duration::days(streak as i64);
+        if dates.contains(&day) {
+            streak += 1;
+        } else {
+            break;
+        }
+    }
+    streak
+}
+
+async fn current_answer_streak(pool: &sqlx::MySqlPool, user_id: i32) -> anyhow::Result<i32> {
+    let today = chrono::Local::now().naive_local().date();
+    let since = today - chrono::Duration::days(366);
+    let dates = db::find_question_answer_dates(pool, user_id, since).await?;
+    Ok(compute_answer_streak(&dates, today))
+}
+
 // ============ 今日题目 ============
 
 #[derive(Serialize)]
@@ -47,6 +75,7 @@ pub struct TodayData {
     pub difficulty: i32,
     pub date: String,
     pub has_answered: bool,
+    pub streak: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub record: Option<TodayRecord>,
 }
@@ -85,6 +114,17 @@ pub async fn get_today(
             );
         }
     };
+    let streak = match current_answer_streak(pool, user_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("计算连续答题天数失败: {}", e);
+            return response::error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                500,
+                "服务器内部错误，请稍后重试",
+            );
+        }
+    };
     let record_data = record.as_ref().map(|r| TodayRecord {
         selected: r.selected.clone(),
         is_correct: r.is_correct,
@@ -102,6 +142,7 @@ pub async fn get_today(
             difficulty: question.difficulty,
             date: question.date.format("%Y-%m-%d").to_string(),
             has_answered: record.is_some(),
+            streak,
             record: record_data,
         },
     )
@@ -118,6 +159,7 @@ pub struct AnswerRequest {
 #[derive(Serialize)]
 pub struct AnswerData {
     pub is_correct: bool,
+    pub streak: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub correct_answer: Option<String>,
     pub explanation: Option<String>,
@@ -178,6 +220,18 @@ pub async fn submit_answer(
         }
     };
 
+    let streak = match current_answer_streak(pool, user_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("计算连续答题天数失败: {}", e);
+            return response::error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                500,
+                "服务器内部错误，请稍后重试",
+            );
+        }
+    };
+
     if record.is_correct {
         const EARNED_POINTS: i32 = 10;
         if let Err(e) = db::add_user_points(pool, user_id, EARNED_POINTS).await {
@@ -189,6 +243,7 @@ pub async fn submit_answer(
             format!("答对啦！+{} 积分", EARNED_POINTS),
             AnswerData {
                 is_correct: true,
+                streak,
                 correct_answer: None,
                 explanation: question.explanation.clone(),
                 earned_points: Some(EARNED_POINTS),
@@ -201,6 +256,7 @@ pub async fn submit_answer(
             format!("答错啦！正确答案是 {}", question.answer),
             AnswerData {
                 is_correct: false,
+                streak,
                 correct_answer: Some(question.answer.clone()),
                 explanation: question.explanation.clone(),
                 earned_points: None,
