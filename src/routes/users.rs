@@ -1,6 +1,7 @@
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{Json, extract::{Multipart, State}, http::StatusCode};
 
 use serde::{Deserialize, Serialize};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     auth, auth_ext::AuthenticatedUser, db, response,
@@ -477,4 +478,133 @@ pub async fn get_my_stats(
             },
         },
     )
+}
+
+// ============ 我的页：更新头像 ============
+
+/// 允许的头像图片扩展名
+fn allowed_avatar_extension(filename: &str) -> Option<String> {
+    let ext = filename.rsplit('.').next()?.to_lowercase();
+    match ext.as_str() {
+        "jpg" | "jpeg" | "png" | "gif" | "webp" => Some(ext),
+        _ => None,
+    }
+}
+
+#[derive(Serialize)]
+pub struct AvatarData {
+    pub avatar_url: String,
+}
+
+/// POST /api/users/me/avatar — 更新当前用户头像（multipart/form-data，字段名 file）
+pub async fn update_avatar(
+    State(state): State<AppState>,
+    AuthenticatedUser(user_id): AuthenticatedUser,
+    mut multipart: Multipart,
+) -> axum::response::Response {
+    let Some(pool) = state.db.as_ref() else {
+        return response::error(StatusCode::INTERNAL_SERVER_ERROR, 500, "数据库未连接");
+    };
+
+    let mut file_bytes: Option<Vec<u8>> = None;
+    let mut file_ext: Option<String> = None;
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+        if name == "file" {
+            let original_name = field.file_name().unwrap_or("avatar").to_string();
+            let ext = match allowed_avatar_extension(&original_name) {
+                Some(e) => e,
+                None => {
+                    return response::error(
+                        StatusCode::BAD_REQUEST,
+                        400,
+                        "不支持的图片格式，仅支持JPG/PNG/GIF/WEBP",
+                    );
+                }
+            };
+            let bytes = match field.bytes().await {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::error!("读取头像文件失败: {}", e);
+                    return response::error(StatusCode::BAD_REQUEST, 400, "文件读取失败");
+                }
+            };
+            const MAX_SIZE: usize = 5 * 1024 * 1024;
+            if bytes.len() > MAX_SIZE {
+                return response::error(StatusCode::BAD_REQUEST, 400, "图片大小超过5MB限制");
+            }
+            file_ext = Some(ext);
+            file_bytes = Some(bytes.to_vec());
+        } else {
+            // 忽略其他字段
+            let _ = field.bytes().await;
+        }
+    }
+
+    let file_bytes = match file_bytes {
+        Some(b) => b,
+        None => return response::error(StatusCode::BAD_REQUEST, 400, "未找到上传文件"),
+    };
+    let ext = file_ext.unwrap();
+
+    // 保存文件
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let stored_name = format!("avatar_{}.{}", ts, ext);
+    let dir = std::path::Path::new(&state.config.upload_dir);
+    if let Err(e) = tokio::fs::create_dir_all(dir).await {
+        tracing::error!("创建上传目录失败: {}", e);
+        return response::error(StatusCode::INTERNAL_SERVER_ERROR, 500, "服务器内部错误，请稍后重试");
+    }
+    let file_path = dir.join(&stored_name);
+    if let Err(e) = tokio::fs::write(&file_path, &file_bytes).await {
+        tracing::error!("保存头像文件失败: {}", e);
+        return response::error(StatusCode::INTERNAL_SERVER_ERROR, 500, "服务器内部错误，请稍后重试");
+    }
+
+    let relative = format!("uploads/{}", stored_name);
+    let avatar_url = state.config.public_url(&relative);
+
+    match db::update_user_avatar(pool, user_id, &avatar_url).await {
+        Ok(true) => {}
+        Ok(false) => {
+            let _ = tokio::fs::remove_file(&file_path).await;
+            return response::error(StatusCode::NOT_FOUND, 404, "用户不存在");
+        }
+        Err(e) => {
+            tracing::error!("更新用户头像失败: {:#}", e);
+            let _ = tokio::fs::remove_file(&file_path).await;
+            return response::error(StatusCode::INTERNAL_SERVER_ERROR, 500, "服务器内部错误，请稍后重试");
+        }
+    }
+
+    response::ok(
+        StatusCode::OK,
+        200,
+        "上传成功",
+        AvatarData { avatar_url },
+    )
+}
+
+// ============ 我的页：注销账号 ============
+
+/// DELETE /api/users/me — 注销当前用户账号
+pub async fn delete_me(
+    State(state): State<AppState>,
+    AuthenticatedUser(user_id): AuthenticatedUser,
+) -> axum::response::Response {
+    let Some(pool) = state.db.as_ref() else {
+        return response::error(StatusCode::INTERNAL_SERVER_ERROR, 500, "数据库未连接");
+    };
+
+    match db::delete_user_account(pool, user_id).await {
+        Ok(()) => response::ok(StatusCode::OK, 200, "注销成功", ()),
+        Err(e) => {
+            tracing::error!("注销账号失败: {:#}", e);
+            response::error(StatusCode::INTERNAL_SERVER_ERROR, 500, "服务器内部错误，请稍后重试")
+        }
+    }
 }

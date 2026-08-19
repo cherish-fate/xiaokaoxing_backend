@@ -41,7 +41,8 @@ pub fn router() -> Router<crate::state::AppState> {
         .route("/api/users/login", post(auth::login))
         // 首页聚合接口
         .route("/api/home", get(home::get_home))
-        .route("/api/users/me", get(users::get_me).put(users::update_me))
+        .route("/api/users/me", get(users::get_me).put(users::update_me).delete(users::delete_me))
+        .route("/api/users/me/avatar", post(users::update_avatar).layer(DefaultBodyLimit::max(5 * 1024 * 1024)))
         .route("/api/users/me/stats", get(users::get_my_stats))
         .route("/api/users/me/learning-stats", get(users::get_learning_stats))
         .route("/api/checkin/stats", get(checkin::get_stats))

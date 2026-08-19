@@ -167,6 +167,21 @@ pub async fn update_user_profile(
     find_user_by_id(pool, user_id).await
 }
 
+/// 仅更新用户头像 URL
+pub async fn update_user_avatar(
+    pool: &MySqlPool,
+    user_id: i32,
+    avatar_url: &str,
+) -> Result<bool> {
+    let result = sqlx::query("UPDATE users SET avatar_url = ?, updated_at = NOW() WHERE id = ?")
+        .bind(avatar_url)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .context("更新用户头像失败")?;
+    Ok(result.rows_affected() > 0)
+}
+
 
 // ============ 考试模型 ============
 
@@ -2963,6 +2978,80 @@ pub async fn reset_user_password(
         .await
         .context("重置用户密码失败")?;
     Ok(result.rows_affected() > 0)
+}
+
+/// 注销账号：删除用户的所有个人数据，保留上传的共享资源、创建的小队和投票内容
+pub async fn delete_user_account(pool: &MySqlPool, user_id: i32) -> Result<()> {
+    let mut tx = pool.begin().await.context("开启事务失败")?;
+
+    // 删除个人数据（按依赖顺序）
+    sqlx::query("DELETE FROM bookmarks WHERE user_id = ?")
+        .bind(user_id).execute(&mut *tx).await
+        .context("删除书签失败")?;
+    sqlx::query("DELETE FROM documents WHERE user_id = ?")
+        .bind(user_id).execute(&mut *tx).await
+        .context("删除文档失败")?;
+    sqlx::query("DELETE FROM course_grades WHERE semester_id IN (SELECT id FROM semesters WHERE user_id = ?)")
+        .bind(user_id).execute(&mut *tx).await
+        .context("删除课程成绩失败")?;
+    sqlx::query("DELETE FROM semesters WHERE user_id = ?")
+        .bind(user_id).execute(&mut *tx).await
+        .context("删除学期失败")?;
+    sqlx::query("DELETE FROM notes WHERE user_id = ?")
+        .bind(user_id).execute(&mut *tx).await
+        .context("删除笔记失败")?;
+    sqlx::query("DELETE FROM question_records WHERE user_id = ?")
+        .bind(user_id).execute(&mut *tx).await
+        .context("删除答题记录失败")?;
+    sqlx::query("DELETE FROM user_points WHERE user_id = ?")
+        .bind(user_id).execute(&mut *tx).await
+        .context("删除积分记录失败")?;
+
+    // 更新投票冗余字段后删除投票记录
+    sqlx::query("UPDATE votes v INNER JOIN vote_records vr ON v.id = vr.vote_id SET v.vote_count = v.vote_count - 1 WHERE vr.user_id = ?")
+        .bind(user_id).execute(&mut *tx).await
+        .context("更新投票票数失败")?;
+    sqlx::query("DELETE FROM vote_records WHERE user_id = ?")
+        .bind(user_id).execute(&mut *tx).await
+        .context("删除投票记录失败")?;
+
+    // 更新小队冗余字段后删除成员记录和申请记录
+    sqlx::query("UPDATE teams t INNER JOIN team_members tm ON t.id = tm.team_id SET t.member_count = t.member_count - 1 WHERE tm.user_id = ?")
+        .bind(user_id).execute(&mut *tx).await
+        .context("更新小队成员数失败")?;
+    sqlx::query("DELETE FROM team_join_requests WHERE user_id = ?")
+        .bind(user_id).execute(&mut *tx).await
+        .context("删除入队申请失败")?;
+    sqlx::query("DELETE FROM team_members WHERE user_id = ?")
+        .bind(user_id).execute(&mut *tx).await
+        .context("删除小队成员记录失败")?;
+
+    sqlx::query("DELETE FROM checkin_records WHERE user_id = ?")
+        .bind(user_id).execute(&mut *tx).await
+        .context("删除打卡记录失败")?;
+    sqlx::query("DELETE FROM ai_conversations WHERE user_id = ?")
+        .bind(user_id).execute(&mut *tx).await
+        .context("删除AI对话记录失败")?;
+    sqlx::query("DELETE FROM favorites WHERE user_id = ?")
+        .bind(user_id).execute(&mut *tx).await
+        .context("删除收藏记录失败")?;
+    sqlx::query("DELETE FROM tasks WHERE user_id = ?")
+        .bind(user_id).execute(&mut *tx).await
+        .context("删除任务失败")?;
+    sqlx::query("DELETE FROM exams WHERE user_id = ?")
+        .bind(user_id).execute(&mut *tx).await
+        .context("删除考试失败")?;
+    sqlx::query("DELETE FROM user_settings WHERE user_id = ?")
+        .bind(user_id).execute(&mut *tx).await
+        .context("删除用户设置失败")?;
+
+    // 最后删除用户本身
+    sqlx::query("DELETE FROM users WHERE id = ?")
+        .bind(user_id).execute(&mut *tx).await
+        .context("删除用户失败")?;
+
+    tx.commit().await.context("提交事务失败")?;
+    Ok(())
 }
 
 pub async fn list_admin_resources(
