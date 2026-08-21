@@ -35,6 +35,7 @@ pub struct VoteItem {
 #[derive(Serialize)]
 pub struct VoteListData {
     pub list: Vec<VoteItem>,
+    pub total_users: i64,
 }
 
 /// GET /api/votes — 获取投票列表（仅已通过，按票数降序）
@@ -66,6 +67,7 @@ pub async fn list_votes(
     };
 
     let total = db::sum_passed_votes_count(pool).await.unwrap_or(0);
+    let total_users = db::count_total_users(pool).await.unwrap_or(0);
 
     let list: Vec<VoteItem> = votes
         .into_iter()
@@ -81,7 +83,7 @@ pub async fn list_votes(
         })
         .collect();
 
-    response::ok(StatusCode::OK, 200, "success", VoteListData { list })
+    response::ok(StatusCode::OK, 200, "success", VoteListData { list, total_users })
 }
 
 // ============ 提交考点 ============
@@ -249,6 +251,7 @@ pub struct MyVoteItem {
 #[derive(Serialize)]
 pub struct MyVotesData {
     pub list: Vec<MyVoteItem>,
+    pub total_users: i64,
 }
 
 /// GET /api/votes/my-votes — 获取我的投票记录
@@ -273,6 +276,7 @@ pub async fn get_my_votes(
     };
 
     let total = db::sum_passed_votes_count(pool).await.unwrap_or(0);
+    let total_users = db::count_total_users(pool).await.unwrap_or(0);
 
     let list: Vec<MyVoteItem> = records
         .into_iter()
@@ -286,7 +290,12 @@ pub async fn get_my_votes(
         })
         .collect();
 
-    response::ok(StatusCode::OK, 200, "success", MyVotesData { list })
+    response::ok(
+        StatusCode::OK,
+        200,
+        "success",
+        MyVotesData { list, total_users },
+    )
 }
 
 // ============ 我提交的考点 ============

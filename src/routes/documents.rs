@@ -456,3 +456,131 @@ pub async fn delete_document(
         }
     }
 }
+
+// ============ 从资源同步到文档库 ============
+
+/// 从 URL 中提取文件扩展名（小写）
+fn extract_extension(url: &str) -> Option<String> {
+    let path = url.split('?').next().unwrap_or(url);
+    let filename = path.rsplit('/').next()?;
+    let ext = filename.rsplit('.').next()?.to_lowercase();
+    if ext.is_empty() || ext == filename {
+        return None;
+    }
+    Some(ext)
+}
+
+#[derive(Deserialize)]
+pub struct FromResourceRequest {
+    pub resource_id: i32,
+}
+
+#[derive(Serialize)]
+pub struct FromResourceData {
+    pub document_id: i32,
+    pub already_exists: bool,
+}
+
+/// POST /api/documents/from-resource — 将资源同步到个人文档库
+pub async fn from_resource(
+    State(state): State<AppState>,
+    AuthenticatedUser(user_id): AuthenticatedUser,
+    Json(payload): Json<FromResourceRequest>,
+) -> axum::response::Response {
+    let Some(pool) = state.db.as_ref() else {
+        return response::error(StatusCode::INTERNAL_SERVER_ERROR, 500, "数据库未连接");
+    };
+
+    // 查询资源
+    let resource = match db::find_resource_by_id(pool, payload.resource_id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return response::error(StatusCode::NOT_FOUND, 404, "资源不存在"),
+        Err(e) => {
+            tracing::error!("查询资源失败: {:#}", e);
+            return response::error(StatusCode::INTERNAL_SERVER_ERROR, 500, "服务器内部错误，请稍后重试");
+        }
+    };
+
+    // 去重：同一用户已同步过该资源（按 file_url 匹配）
+    if let Ok(Some(existing)) = db::find_document_by_user_url(pool, user_id, &resource.file_url).await {
+        return response::ok(
+            StatusCode::OK,
+            200,
+            "success",
+            FromResourceData {
+                document_id: existing.id,
+                already_exists: true,
+            },
+        );
+    }
+
+    // 字段映射
+    let name = resource.title;
+    let file_url = resource.file_url.clone();
+    let category = if resource.category.is_empty() {
+        Some("资源收藏".to_string())
+    } else {
+        Some(resource.category)
+    };
+    let file_type = extract_extension(&file_url)
+        .map(|ext| document_file_type(&ext))
+        .unwrap_or_else(|| "Other".to_string());
+
+    let document_id = match db::create_document(
+        pool,
+        user_id,
+        &name,
+        &file_url,
+        0,
+        &file_type,
+        category.as_deref(),
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!("从资源创建文档失败: {:#}", e);
+            return response::error(StatusCode::INTERNAL_SERVER_ERROR, 500, "服务器内部错误，请稍后重试");
+        }
+    };
+
+    response::ok(
+        StatusCode::OK,
+        200,
+        "success",
+        FromResourceData {
+            document_id,
+            already_exists: false,
+        },
+    )
+}
+
+/// DELETE /api/documents/from-resource/{resourceId} — 取消资源收藏时移除同步的文档
+pub async fn delete_from_resource(
+    State(state): State<AppState>,
+    AuthenticatedUser(user_id): AuthenticatedUser,
+    Path(resource_id): Path<i32>,
+) -> axum::response::Response {
+    let Some(pool) = state.db.as_ref() else {
+        return response::error(StatusCode::INTERNAL_SERVER_ERROR, 500, "数据库未连接");
+    };
+
+    // 查询资源获取 file_url（资源不存在也视为文档不存在，统一返回 404）
+    let file_url = match db::find_resource_by_id(pool, resource_id).await {
+        Ok(Some(r)) => r.file_url,
+        Ok(None) => return response::error(StatusCode::NOT_FOUND, 404, "文档不存在"),
+        Err(e) => {
+            tracing::error!("查询资源失败: {:#}", e);
+            return response::error(StatusCode::INTERNAL_SERVER_ERROR, 500, "服务器内部错误，请稍后重试");
+        }
+    };
+
+    match db::delete_document_by_user_url(pool, user_id, &file_url).await {
+        Ok(true) => response::ok(StatusCode::OK, 200, "success", serde_json::Value::Null),
+        Ok(false) => response::error(StatusCode::NOT_FOUND, 404, "文档不存在"),
+        Err(e) => {
+            tracing::error!("按资源删除文档失败: {:#}", e);
+            response::error(StatusCode::INTERNAL_SERVER_ERROR, 500, "服务器内部错误，请稍后重试")
+        }
+    }
+}

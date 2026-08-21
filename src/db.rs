@@ -575,6 +575,18 @@ pub async fn resource_exists(pool: &MySqlPool, id: i32) -> Result<bool> {
     Ok(row.is_some())
 }
 
+/// 根据 ID 查询资源详情
+pub async fn find_resource_by_id(pool: &MySqlPool, id: i32) -> Result<Option<Resource>> {
+    let resource = sqlx::query_as::<_, Resource>(
+        "SELECT id, title, category, type_tag, school_name, major_id, author, description, file_url, view_count, is_hot, created_at, updated_at FROM resources WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .context("查询资源失败")?;
+    Ok(resource)
+}
+
 /// 按分类查询资源列表（带收藏状态），category 为 None 返回全部
 pub async fn find_resources_list(
     pool: &MySqlPool,
@@ -2477,6 +2489,24 @@ pub async fn find_document_by_id(pool: &MySqlPool, id: i32) -> Result<Option<Doc
     Ok(row)
 }
 
+/// 按用户ID和文件URL查询文档（用于去重判断）
+pub async fn find_document_by_user_url(
+    pool: &MySqlPool,
+    user_id: i32,
+    file_url: &str,
+) -> Result<Option<Document>> {
+    let row = sqlx::query_as::<_, Document>(
+        "SELECT id, user_id, name, file_url, file_size, file_type, category, is_offline, last_opened_at, created_at, updated_at \
+        FROM documents WHERE user_id = ? AND file_url = ? LIMIT 1",
+    )
+    .bind(user_id)
+    .bind(file_url)
+    .fetch_optional(pool)
+    .await
+    .context("按URL查询文档失败")?;
+    Ok(row)
+}
+
 pub async fn create_document(
     pool: &MySqlPool,
     user_id: i32,
@@ -2618,6 +2648,21 @@ pub async fn delete_document(pool: &MySqlPool, id: i32, user_id: i32) -> Result<
         .execute(pool)
         .await
         .context("删除文档失败")?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// 按用户ID和文件URL删除文档（用于取消资源收藏时移除同步的文档）
+pub async fn delete_document_by_user_url(
+    pool: &MySqlPool,
+    user_id: i32,
+    file_url: &str,
+) -> Result<bool> {
+    let result = sqlx::query("DELETE FROM documents WHERE user_id = ? AND file_url = ?")
+        .bind(user_id)
+        .bind(file_url)
+        .execute(pool)
+        .await
+        .context("按URL删除文档失败")?;
     Ok(result.rows_affected() > 0)
 }
 
